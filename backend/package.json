@@ -1,0 +1,44 @@
+{
+  "name": "facturacion-api",
+  "version": "0.1.0",
+  "private": true,
+  "engines": {
+    "node": ">=22 <25"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "format": "prettier --write src scripts test ../frontend/src ../frontend/vite.config.js",
+    "start": "node dist/src/main.js",
+    "start:dev": "node --watch dist/src/main.js",
+    "migrate": "node dist/scripts/migrate.js",
+    "db:local": "node scripts/local-db.mjs",
+    "db:role": "node dist/scripts/provision-role.js",
+    "bootstrap": "node dist/scripts/bootstrap.js",
+    "bootstrap:local": "node scripts/bootstrap-local.mjs",
+    "test": "npm run build && node --test --test-concurrency=1 dist/test/*.test.js",
+    "test:browser": "npm run build && npm --prefix ../frontend run build && RUN_BROWSER=1 node --test dist/test/integration.test.js"
+  },
+  "dependencies": {
+    "@nestjs/common": "^11.0.0",
+    "@nestjs/core": "^11.0.0",
+    "@nestjs/platform-express": "^11.0.0",
+    "decimal.js": "^10.6.0",
+    "dotenv": "^17.0.0",
+    "helmet": "^8.0.0",
+    "pg": "^8.16.0",
+    "reflect-metadata": "^0.2.2",
+    "rxjs": "^7.8.0",
+    "zod": "^4.0.0"
+  },
+  "overrides": {
+    "multer": "2.5.0"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.0",
+    "@types/node": "^24.0.0",
+    "@types/pg": "^8.15.0",
+    "playwright-core": "^1.64.1",
+    "prettier": "^3.9.10",
+    "typescript": "^5.9.0"
+  }
+}

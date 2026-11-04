@@ -1,0 +1,43 @@
+name: Validate application
+on: [push, pull_request]
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-bookworm
+        env:
+          POSTGRES_PASSWORD: ci-postgres-only
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      MIGRATION_DATABASE_URL: postgresql://postgres:ci-postgres-only@localhost:5432/postgres
+      APP_DB_PASSWORD: ci-app-password-only
+      TEST_ADMIN_DATABASE_URL: postgresql://postgres:ci-postgres-only@localhost:5432/erp_test
+      TEST_DATABASE_URL: postgresql://erp_app:ci-app-password-only@localhost:5432/erp_test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: |
+            backend/package-lock.json
+            frontend/package-lock.json
+      - run: npm ci
+        working-directory: frontend
+      - run: npm run build
+        working-directory: frontend
+      - run: npm ci
+        working-directory: backend
+      - run: npm run build && npm run db:role && npm test
+        working-directory: backend
+      - run: npx playwright-core install --with-deps chromium
+        working-directory: backend
+      - name: Browser workflow
+        working-directory: backend
+        run: |
+          export CHROMIUM_PATH="$(node -p "require('playwright-core').chromium.executablePath()")"
+          npm run test:browser

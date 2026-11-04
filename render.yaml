@@ -1,0 +1,39 @@
+# Development deployment. Review current free-plan availability in Render.
+services:
+  - type: web
+    name: nexo-facturacion-demo
+    runtime: node
+    plan: free
+    region: oregon
+    branch: main
+    autoDeploy: false
+    buildCommand: bash scripts/render-build.sh
+    startCommand: node backend/dist/scripts/start-render.js
+    healthCheckPath: /api/health/ready
+    envVars:
+      - key: NODE_VERSION
+        value: '24'
+      - key: NODE_ENV
+        value: production
+      - key: MIGRATION_DATABASE_URL
+        fromDatabase:
+          name: nexo-facturacion-db
+          property: connectionString
+      - key: APP_DB_PASSWORD
+        generateValue: true
+      - key: BOOTSTRAP_EMAIL
+        sync: false
+      - key: BOOTSTRAP_PASSWORD
+        sync: false
+      - key: BOOTSTRAP_COMPANY
+        value: Empresa de demostración
+      - key: BOOTSTRAP_RIF
+        value: J-00000000-1
+databases:
+  - name: nexo-facturacion-db
+    plan: free
+    region: oregon
+    postgresMajorVersion: '17'
+    databaseName: nexo
+    user: nexo_owner
+    ipAllowList: []
