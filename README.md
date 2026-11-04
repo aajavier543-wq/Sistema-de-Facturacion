@@ -1,6 +1,6 @@
 # Nexo · Sistema de facturación
 
-Primera entrega funcional de un sistema administrativo y POS para Venezuela.
+Base funcional de un sistema administrativo y POS para Venezuela, con interfaz modular 0.2.
 Backend NestJS/TypeScript, PostgreSQL 17 con RLS e interfaz React. Node.js 24 recomendado.
 
 ## Qué funciona
@@ -11,6 +11,11 @@ Backend NestJS/TypeScript, PostgreSQL 17 con RLS e interfaz React. Node.js 24 re
 - Existencias por sucursal, ajustes auditados, idempotencia y rechazo de saldos negativos.
 - Vista previa con IVA 16 %, 8 % o exento y principal repartido entre tramos elegibles/no elegibles para IGTF al 3 %.
 - Interfaz con búsqueda F2 y lectura de código + Enter cuando hay un solo resultado.
+- Panel de operaciones con conteos reales de artículos y existencias por sucursal.
+- Catálogo paginado, edición auditada de fichas y control de cambios concurrentes.
+- Historial de movimientos con búsqueda, paginación y exportación CSV de la página consultada.
+- Creación y selección de sucursales desde la interfaz.
+- Cotizador con documento imprimible, precios actualizados desde el servidor y atajo Ctrl+Enter.
 
 **La vista previa es una simulación.** Usa tasa manual, no consulta el BCV, no registra ventas,
 no confirma pagos ni emite facturas fiscales. La elegibilidad del IGTF es declarada en esta pantalla;
@@ -69,7 +74,8 @@ También requiere dependencias instaladas en ambos directorios.
 
 La suite verifica RLS, permisos, contexto del pool, autenticación, auditoría, reintentos,
 competencia por la última unidad y cálculos decimales. El recorrido de navegador crea
-un producto, ajusta su existencia y calcula pagos mixtos en su base temporal.
+un artículo, edita su ficha, ajusta su existencia, consulta movimientos, exporta CSV,
+calcula pagos mixtos, comprueba la impresión y crea una sucursal en su base temporal.
 
 ## API inicial
 
@@ -82,6 +88,10 @@ un producto, ajusta su existencia y calcula pagos mixtos en su base temporal.
 | DELETE | `/api/auth/session` | Revocar sesión |
 | GET / POST | `/api/branches` | Consultar / crear sucursal |
 | GET / POST | `/api/products` | Consultar / crear productos |
+| PATCH | `/api/products/:id` | Editar ficha con `expectedVersion` y auditoría |
+| GET | `/api/dashboard?branchId=...` | Conteos reales de catálogo y existencias |
+| GET | `/api/inventory/stock?branchId=...` | Catálogo con existencias y paginación |
+| GET | `/api/inventory/movements?branchId=...` | Movimientos auditados con paginación |
 | GET | `/api/branches/:id/stock` | Existencias, máximo 500 filas |
 | POST | `/api/inventory/adjustments` | Ajuste con UUID de idempotencia |
 | POST | `/api/quotes/preview` | Simulación monetaria y fiscal |
@@ -120,4 +130,11 @@ docs/           Arquitectura, límites y despliegue
 ```
 
 Consulta [la arquitectura y siguientes módulos](docs/architecture.md) y
-[la guía de Render](docs/render.md). Esta entrega no se ha publicado ni desplegado en Render.
+[la guía de Render](docs/render.md). Para ver cambios publicados en `main`, despliega el
+último commit en Render; su estado operativo se verifica en el servicio remoto.
+
+La migración `002_product_editing.sql` agrega la versión de las fichas y permisos de edición.
+El arranque de Render la aplica antes de iniciar la API. Si arrancas mediante `npm start`
+directamente, ejecuta primero `npm run migrate` con las credenciales administrativas.
+
+La inspección de los adjuntos FoxPro se documenta en [archivos de referencia](docs/references/legacy-files.md).

@@ -278,60 +278,169 @@ test('cotización usa precios del servidor y calcula pagos mixtos como simulaci�
   assert.equal(result.body.simulation, true);
   assert.equal(result.body.fiscalDocument, false);
 });
+test('panel y consultas paginadas respetan empresa y sucursal', async () => {
+  const summary = await request('/dashboard?branchId=' + branch);
+  assert.equal(summary.status, 200);
+  assert.deepEqual(summary.body, { products: 1, with_stock: 0, without_stock: 1, branches: 2 });
+  const stock = await request(`/inventory/stock?branchId=${branch}&limit=1`);
+  assert.equal(stock.body.total, 1);
+  assert.equal(stock.body.items[0].id, product);
+  assert.equal(Number(stock.body.items[0].quantity), 0);
+  assert.equal((await request('/dashboard?branchId=' + foreignBranch)).status, 404);
+  assert.equal(
+    (await request('/inventory/stock?branchId=' + otherBranch, { token: cashierToken })).status,
+    404,
+  );
+  const cashierSummary = await request('/dashboard?branchId=' + branch, { token: cashierToken });
+  assert.equal(cashierSummary.body.branches, 1);
+});
+test('historial refleja movimientos únicos y filtra sin exponer otra sucursal', async () => {
+  const ledger = await request('/inventory/movements?branchId=' + branch);
+  assert.equal(ledger.status, 200);
+  assert.equal(ledger.body.total, 2);
+  const filtered = await request('/inventory/movements?branchId=' + branch + '&search=concurrente');
+  assert.equal(filtered.body.total, 1);
+  assert.equal(Number(filtered.body.items[0].delta), -1);
+  assert.equal(
+    (await request('/inventory/movements?branchId=' + otherBranch, { token: cashierToken })).status,
+    404,
+  );
+});
+test('edición auditada detecta conflictos y el cotizador usa el precio actualizado', async () => {
+  const body = {
+    name: 'Producto A actualizado',
+    barcode: null,
+    priceUsd: '125',
+    taxCategory: 'exempt',
+    expectedVersion: 0,
+  };
+  const update = await request('/products/' + product, { method: 'PATCH', body });
+  assert.equal(update.status, 200);
+  assert.equal(update.body.version, 1);
+  assert.equal((await request('/products/' + product, { method: 'PATCH', body })).status, 409);
+  assert.equal(
+    (await request('/products/' + product, { method: 'PATCH', body, token: cashierToken })).status,
+    403,
+  );
+  assert.equal(
+    (await request('/products/' + foreignProduct, { method: 'PATCH', body })).status,
+    404,
+  );
+  const quote = await request('/quotes/preview', {
+    method: 'POST',
+    body: { rate: '40', lines: [{ productId: product, quantity: '1' }] },
+  });
+  assert.equal(quote.body.purchaseTotalBase, '5000.00');
+  assert.equal(quote.body.lines[0].sku, 'SKU-A');
+  assert.equal(quote.body.lines[0].name, 'Producto A actualizado');
+  assert.equal(Number(quote.body.lines[0].priceUsd), 125);
+  const audit = await db.transaction(principal, (c) =>
+    c.query("SELECT details FROM audit_events WHERE action='product.update' AND entity_id=$1", [
+      product,
+    ]),
+  );
+  assert.equal(audit.rowCount, 1);
+  assert.equal(Number(audit.rows[0].details.before.price_usd), 100);
+});
 if (process.env.RUN_BROWSER === '1')
-  test('navegador: login, catálogo, ajuste, cotización mixta y logout', async () => {
+  test('navegador: panel, artículos editables, movimientos, exportación, cotización y sucursales', async () => {
     const browser = await chromium.launch({
       executablePath: process.env.CHROMIUM_PATH ?? '/usr/bin/chromium',
       headless: true,
       args: ['--no-sandbox', '--disable-dev-shm-usage'],
     });
     try {
-      const page = await browser.newPage();
+      const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
       const errors: string[] = [];
-      page.on('pageerror', (error) => errors.push(error.message));
+      page.on('pageerror', (e) => errors.push(e.message));
       await page.goto(base.replace(/\/api$/, ''));
       await page.getByLabel('Correo electrónico').fill('admin@example.test');
-      await page.getByLabel('Contraseña').fill(password);
-      await page.getByRole('button', { name: 'Ingresar' }).click();
-      await page.getByRole('heading', { name: 'Catálogo e inventario' }).waitFor();
-      const productForm = page
-        .locator('form')
-        .filter({ has: page.getByRole('button', { name: 'Crear producto' }) });
-      await productForm.getByLabel('Nombre', { exact: true }).fill('Producto navegador');
-      await productForm.getByLabel('SKU', { exact: true }).fill('BROWSER-1');
-      await productForm.getByLabel('Precio USD sin IVA').fill('100');
-      await productForm.getByLabel('IVA', { exact: true }).selectOption('exempt');
-      await productForm.getByRole('button', { name: 'Crear producto' }).click();
-      await page.getByRole('status').filter({ hasText: 'Producto creado' }).waitFor();
-      const stockForm = page
-        .locator('form')
-        .filter({ has: page.getByRole('button', { name: 'Registrar ajuste' }) });
-      await stockForm
-        .getByLabel('Producto', { exact: true })
-        .selectOption({ label: 'BROWSER-1 · Producto navegador' });
-      await stockForm.getByLabel('Cantidad a sumar o restar').fill('3');
-      await stockForm.getByLabel('Motivo').fill('Conteo inicial navegador');
-      await stockForm.getByRole('button', { name: 'Registrar ajuste' }).click();
-      await page.getByRole('status').filter({ hasText: 'Ajuste registrado' }).waitFor();
-      await page.getByLabel('Tasa manual').fill('40');
+      await page.getByLabel('Contraseña', { exact: true }).fill(password);
+      await page.getByRole('button', { name: 'Ingresar al sistema' }).click();
+      await page.getByRole('heading', { name: 'Resumen de operaciones' }).waitFor();
+      await page.getByRole('button', { name: 'Artículos y existencias', exact: true }).click();
+      await page.getByRole('button', { name: 'Nuevo artículo', exact: true }).click();
+      let dialog = page.getByRole('dialog');
+      await dialog.getByLabel('Código / SKU').fill('BROWSER-1');
+      await dialog.getByLabel('Descripción del artículo').fill('Producto navegador');
+      await dialog.getByLabel('Precio USD sin IVA').fill('100');
+      await dialog.getByLabel('IVA', { exact: true }).selectOption('exempt');
+      await dialog.getByRole('button', { name: 'Crear artículo', exact: true }).click();
+      await dialog.waitFor({ state: 'hidden' });
+      let row = page.getByRole('row').filter({ hasText: 'BROWSER-1' });
+      await row.click();
+      await page.getByRole('button', { name: 'Editar ficha' }).click();
+      dialog = page.getByRole('dialog');
+      await dialog.getByLabel('Descripción del artículo').fill('Producto navegador actualizado');
+      await dialog.getByRole('button', { name: 'Guardar cambios' }).click();
+      await dialog.waitFor({ state: 'hidden' });
+      row = page.getByRole('row').filter({ hasText: 'BROWSER-1' });
+      await row.click();
+      await page.getByRole('button', { name: 'Ajustar existencia' }).click();
+      dialog = page.getByRole('dialog');
+      await dialog.getByLabel('Cantidad a sumar o restar').fill('3');
+      await dialog.getByLabel('Motivo del ajuste').fill('Conteo inicial navegador');
+      await dialog.getByRole('button', { name: 'Registrar ajuste' }).click();
+      await dialog.waitFor({ state: 'hidden' });
       await page
         .getByRole('row')
-        .filter({ hasText: 'Producto navegador' })
-        .getByRole('button', { name: 'Agregar' })
-        .click();
+        .filter({ hasText: 'BROWSER-1' })
+        .getByText('Disponible', { exact: true })
+        .waitFor();
+      const downloadEvent = page.waitForEvent('download');
+      await page.getByRole('button', { name: 'Exportar página' }).click();
+      const download = await downloadEvent;
+      assert.equal(download.suggestedFilename(), 'articulos-pagina.csv');
+      const stream = await download.createReadStream();
+      let csv = '';
+      for await (const chunk of stream) csv += chunk.toString();
+      assert.match(csv, /BROWSER-1/);
+      assert.match(csv, /Producto navegador actualizado/);
+      await page.getByRole('button', { name: 'Movimientos', exact: true }).click();
+      await page.getByRole('row').filter({ hasText: 'Conteo inicial navegador' }).waitFor();
+      await page.getByRole('button', { name: 'Artículos y existencias', exact: true }).click();
+      await page.getByLabel('Tasa manual Bs por USD').fill('40');
+      await page.getByRole('row').filter({ hasText: 'BROWSER-1' }).click();
+      await page.getByRole('button', { name: 'Cotizar', exact: true }).click();
+      await page.getByLabel('Cantidad de Producto navegador actualizado').waitFor();
       await page.getByLabel('Principal no gravado por IGTF').fill('40');
       await page.getByLabel('Principal elegible para IGTF').fill('60');
-      await page.getByRole('button', { name: 'Calcular vista previa' }).click();
+      await page.getByRole('button', { name: 'Calcular cotización', exact: true }).click();
       await page.locator('.totals').waitFor();
       assert.match(await page.locator('.totals').innerText(), /72,00/);
       assert.match(await page.locator('.totals').innerText(), /4\.072,00/);
+      await page.getByRole('button', { name: 'Resumen de operaciones', exact: true }).click();
+      await page.getByRole('button', { name: 'Cotizaciones', exact: true }).click();
+      assert.equal(
+        await page.getByLabel('Cantidad de Producto navegador actualizado').inputValue(),
+        '1',
+      );
+      await page.emulateMedia({ media: 'print' });
+      assert.equal(await page.locator('.print-document').isVisible(), true);
+      assert.match(await page.locator('.print-document').innerText(), /NO ES FACTURA FISCAL/);
+      await page.emulateMedia({ media: 'screen' });
+      if (process.env.SCREENSHOT_DIR) {
+        await page.screenshot({
+          path: process.env.SCREENSHOT_DIR + '/cotizacion.png',
+          fullPage: true,
+        });
+      }
       await page.setViewportSize({ width: 390, height: 844 });
       assert.equal(
         await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth),
         true,
       );
-      await page.getByRole('button', { name: 'Cerrar sesión' }).click();
-      await page.getByRole('heading', { name: 'Accede a tu empresa' }).waitFor();
+      if (process.env.SCREENSHOT_DIR)
+        await page.screenshot({ path: process.env.SCREENSHOT_DIR + '/movil.png', fullPage: true });
+      await page.getByRole('button', { name: 'Sucursales', exact: true }).click();
+      await page.getByRole('button', { name: 'Nueva sucursal', exact: true }).click();
+      dialog = page.getByRole('dialog');
+      await dialog.getByLabel('Nombre de la sucursal').fill('Sucursal navegador');
+      await dialog.getByRole('button', { name: 'Crear sucursal', exact: true }).click();
+      await page.getByRole('heading', { name: 'Sucursal navegador', exact: true }).waitFor();
+      page.on('dialog', (d) => d.accept());
+      await page.getByRole('button', { name: 'Cerrar sesión', exact: true }).click();
+      await page.getByRole('heading', { name: 'Bienvenido a tu empresa' }).waitFor();
       assert.deepEqual(errors, []);
     } finally {
       await browser.close();
