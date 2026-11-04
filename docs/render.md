@@ -56,6 +56,27 @@ gratuita para volver a intentarlo. Asegúrate de conservar el email y contraseñ
 que elegiste al crear el Blueprint; Render ignora nuevas variables `sync: false` al actualizar
 un Blueprint existente.
 
+### Diagnóstico de arranque
+
+Los registros muestran la etapa activa con `[deployment]`:
+`configuration`, `select_database`, `inspect_database`, `provision_role`, `migrations`,
+`runtime_connection` y `bootstrap`. Ante un fallo se imprime únicamente etapa, código,
+nombres de variables inválidas y una indicación estática; nunca URLs, contraseñas, SQL,
+mensajes completos de PostgreSQL ni stacks que puedan contenerlos.
+
+- `INVALID_CONFIGURATION`: en **Environment** corrige las variables listadas en `fields`.
+  En particular, `BOOTSTRAP_EMAIL` debe ser un correo válido y `BOOTSTRAP_PASSWORD` debe
+  tener 12–128 caracteres. El Blueprint no rellena automáticamente estos secretos al
+  actualizar una configuración existente después de una sincronización fallida.
+- `42501` en `select_database`: el propietario no tiene permiso para crear la base lógica.
+- `42501` en `provision_role`: el propietario no tiene permiso para crear `erp_app`.
+- `28P01` en `runtime_connection`: el rol ya existe y su contraseña no coincide con
+  `APP_DB_PASSWORD`. El programa conserva las credenciales existentes.
+
+Después de corregir valores en **Environment**, guarda y despliega de nuevo. No publiques
+los valores ni la URL de conexión al compartir los registros. La etapa y código bastan para
+continuar el diagnóstico. El build exitoso no identifica un fallo de inicialización.
+
 ## Operación con tareas administrativas separadas
 
 1. Crear PostgreSQL y un Web Service Node.js en la misma región.

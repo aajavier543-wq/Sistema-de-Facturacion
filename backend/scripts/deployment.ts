@@ -2,6 +2,7 @@ import { Pool, escapeLiteral, escapeIdentifier } from 'pg';
 import { z } from 'zod';
 import { migrate } from './migrate';
 import { hashPassword } from '../src/security';
+import { DeploymentFailure, DeploymentStage } from './deployment-errors';
 
 const configuration = z.object({
   MIGRATION_DATABASE_URL: z.url(),
@@ -18,13 +19,37 @@ const configuration = z.object({
 
 /** Run before HTTP starts. Existing roles, passwords and accounts are never reset. */
 export async function initializeDeployment(input: NodeJS.ProcessEnv): Promise<string> {
-  const config = configuration.parse(input);
+  let stage: DeploymentStage = 'configuration';
+  const progress = (next: DeploymentStage) => {
+    stage = next;
+    console.log(`[deployment] ${next}`);
+  };
+  try {
+    progress('configuration');
+    const config = configuration.parse(input);
+    return await initializeConfiguredDeployment(config, progress);
+  } catch (error) {
+    throw new DeploymentFailure(stage, error);
+  }
+}
+
+async function initializeConfiguredDeployment(
+  config: z.infer<typeof configuration>,
+  progress: (stage: DeploymentStage) => void,
+): Promise<string> {
+  progress('select_database');
   const migrationUrl = config.APP_DATABASE_NAME
     ? await selectApplicationDatabase(config.MIGRATION_DATABASE_URL, config.APP_DATABASE_NAME)
     : config.MIGRATION_DATABASE_URL;
-  const owner = new Pool({ connectionString: migrationUrl, max: 1 });
+  const owner = new Pool({
+    connectionString: migrationUrl,
+    max: 1,
+    connectionTimeoutMillis: 10000,
+  });
   try {
+    progress('inspect_database');
     if (config.APP_DATABASE_NAME) await verifyApplicationDatabase(owner);
+    progress('provision_role');
     const c = await owner.connect();
     try {
       await c.query('BEGIN');
@@ -41,6 +66,7 @@ export async function initializeDeployment(input: NodeJS.ProcessEnv): Promise<st
     } finally {
       c.release();
     }
+    progress('migrations');
     await migrate(migrationUrl);
 
     const runtimeUrl = new URL(migrationUrl);
@@ -48,7 +74,12 @@ export async function initializeDeployment(input: NodeJS.ProcessEnv): Promise<st
     runtimeUrl.password = config.APP_DB_PASSWORD;
     runtimeUrl.searchParams.delete('user');
     runtimeUrl.searchParams.delete('password');
-    const runtime = new Pool({ connectionString: runtimeUrl.toString(), max: 1 });
+    progress('runtime_connection');
+    const runtime = new Pool({
+      connectionString: runtimeUrl.toString(),
+      max: 1,
+      connectionTimeoutMillis: 10000,
+    });
     try {
       const role = await runtime.query(`SELECT r.rolsuper,r.rolbypassrls,
         EXISTS(SELECT 1 FROM pg_class WHERE relname='products' AND relowner=r.oid) AS owns_tables
@@ -60,6 +91,7 @@ export async function initializeDeployment(input: NodeJS.ProcessEnv): Promise<st
       await runtime.end();
     }
 
+    progress('bootstrap');
     const c2 = await owner.connect();
     try {
       await c2.query('BEGIN');
@@ -124,7 +156,7 @@ async function selectApplicationDatabase(source: string, name: string): Promise<
   const url = new URL(source);
   if (decodeURIComponent(url.pathname.slice(1)) === name)
     throw new Error('Application database must differ from the existing source database');
-  const pool = new Pool({ connectionString: source, max: 1 });
+  const pool = new Pool({ connectionString: source, max: 1, connectionTimeoutMillis: 10000 });
   const client = await pool.connect();
   try {
     await client.query('SELECT pg_advisory_lock(758294)');

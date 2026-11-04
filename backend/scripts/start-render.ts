@@ -2,6 +2,7 @@ import 'dotenv/config';
 import { spawn } from 'node:child_process';
 import { resolve } from 'node:path';
 import { initializeDeployment, runtimeEnvironment } from './deployment';
+import { deploymentDiagnostic } from './deployment-errors';
 
 async function main() {
   const databaseUrl = await initializeDeployment(process.env);
@@ -17,9 +18,7 @@ async function main() {
   });
   child.once('exit', (code) => process.exit(code ?? 1));
 }
-main().catch(() => {
-  console.error(
-    'Deployment initialization failed. Check owner CREATEDB/CREATEROLE permissions, database connectivity, bootstrap inputs and existing erp_app credentials. The target must be empty or an initialized Nexo database. No passwords were reset.',
-  );
+main().catch((error: unknown) => {
+  console.error('Deployment initialization failed', deploymentDiagnostic(error));
   process.exitCode = 1;
 });

@@ -9,6 +9,7 @@ import { resolve } from 'node:path';
 import { Pool, escapeLiteral } from 'pg';
 import { initializeDeployment, runtimeEnvironment } from '../scripts/deployment';
 import { verifyPassword } from '../src/security';
+import { DeploymentFailure } from '../scripts/deployment-errors';
 
 const suffix = randomBytes(6).toString('hex');
 const database = `deploy_test_${suffix}`;
@@ -102,7 +103,10 @@ test('rechaza una base destino ajena con datos sin crear tablas ni sobrescribirl
     await foreign.query('INSERT INTO valuable_records VALUES(123)');
     await assert.rejects(
       initializeDeployment({ ...config, APP_DATABASE_NAME: occupiedDatabase }),
-      /unrecognized data/,
+      (error: unknown) =>
+        error instanceof DeploymentFailure &&
+        error.stage === 'inspect_database' &&
+        error.code === 'DATABASE_HAS_OTHER_DATA',
     );
     assert.equal((await foreign.query('SELECT id FROM valuable_records')).rows[0].id, 123);
     assert.equal(
@@ -138,7 +142,10 @@ test('bootstrap de despliegue funciona con propietario sin superuser y es repeti
 test('bootstrap no concede permisos sobre una identidad preexistente diferente', async () => {
   await assert.rejects(
     initializeDeployment({ ...config, BOOTSTRAP_RIF: 'J-00000000-4' }),
-    /conflicts/,
+    (error: unknown) =>
+      error instanceof DeploymentFailure &&
+      error.stage === 'bootstrap' &&
+      error.code === 'BOOTSTRAP_IDENTITY_CONFLICT',
   );
   assert.equal((await owner.query('SELECT id FROM tenants')).rowCount, 1);
 });

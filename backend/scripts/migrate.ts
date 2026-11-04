@@ -3,7 +3,7 @@ import { Pool } from 'pg';
 import { readdir, readFile } from 'node:fs/promises';
 import path from 'node:path';
 export async function migrate(connectionString: string) {
-  const pool = new Pool({ connectionString });
+  const pool = new Pool({ connectionString, connectionTimeoutMillis: 10000 });
   const client = await pool.connect();
   try {
     await client.query(`SELECT pg_advisory_lock(758291)`);
