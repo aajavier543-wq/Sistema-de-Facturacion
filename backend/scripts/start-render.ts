@@ -19,7 +19,7 @@ async function main() {
 }
 main().catch(() => {
   console.error(
-    'Deployment initialization failed. Check owner CREATEROLE permission, database connectivity, bootstrap inputs and existing erp_app credentials. No passwords were reset.',
+    'Deployment initialization failed. Check owner CREATEDB/CREATEROLE permissions, database connectivity, bootstrap inputs and existing erp_app credentials. The target must be empty or an initialized Nexo database. No passwords were reset.',
   );
   process.exitCode = 1;
 });

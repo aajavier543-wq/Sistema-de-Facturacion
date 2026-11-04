@@ -1,10 +1,14 @@
-import { Pool, escapeLiteral } from 'pg';
+import { Pool, escapeLiteral, escapeIdentifier } from 'pg';
 import { z } from 'zod';
 import { migrate } from './migrate';
 import { hashPassword } from '../src/security';
 
 const configuration = z.object({
   MIGRATION_DATABASE_URL: z.url(),
+  APP_DATABASE_NAME: z
+    .string()
+    .regex(/^[a-z][a-z0-9_]{0,62}$/)
+    .optional(),
   APP_DB_PASSWORD: z.string().min(16).max(256),
   BOOTSTRAP_EMAIL: z.email().transform((s) => s.toLowerCase()),
   BOOTSTRAP_PASSWORD: z.string().min(12).max(128),
@@ -15,8 +19,12 @@ const configuration = z.object({
 /** Run before HTTP starts. Existing roles, passwords and accounts are never reset. */
 export async function initializeDeployment(input: NodeJS.ProcessEnv): Promise<string> {
   const config = configuration.parse(input);
-  const owner = new Pool({ connectionString: config.MIGRATION_DATABASE_URL, max: 1 });
+  const migrationUrl = config.APP_DATABASE_NAME
+    ? await selectApplicationDatabase(config.MIGRATION_DATABASE_URL, config.APP_DATABASE_NAME)
+    : config.MIGRATION_DATABASE_URL;
+  const owner = new Pool({ connectionString: migrationUrl, max: 1 });
   try {
+    if (config.APP_DATABASE_NAME) await verifyApplicationDatabase(owner);
     const c = await owner.connect();
     try {
       await c.query('BEGIN');
@@ -33,9 +41,9 @@ export async function initializeDeployment(input: NodeJS.ProcessEnv): Promise<st
     } finally {
       c.release();
     }
-    await migrate(config.MIGRATION_DATABASE_URL);
+    await migrate(migrationUrl);
 
-    const runtimeUrl = new URL(config.MIGRATION_DATABASE_URL);
+    const runtimeUrl = new URL(migrationUrl);
     runtimeUrl.username = 'erp_app';
     runtimeUrl.password = config.APP_DB_PASSWORD;
     runtimeUrl.searchParams.delete('user');
@@ -107,6 +115,59 @@ export async function initializeDeployment(input: NodeJS.ProcessEnv): Promise<st
   } finally {
     await owner.end();
   }
+}
+
+/** Render supports additional logical databases on an existing Postgres instance.
+ * Only database-level metadata is changed on the source; its tables are untouched.
+ */
+async function selectApplicationDatabase(source: string, name: string): Promise<string> {
+  const url = new URL(source);
+  if (decodeURIComponent(url.pathname.slice(1)) === name)
+    throw new Error('Application database must differ from the existing source database');
+  const pool = new Pool({ connectionString: source, max: 1 });
+  const client = await pool.connect();
+  try {
+    await client.query('SELECT pg_advisory_lock(758294)');
+    const found = await client.query(
+      `SELECT pg_get_userbyid(datdba)=current_user AS owned
+      FROM pg_database WHERE datname=$1`,
+      [name],
+    );
+    if (found.rowCount) {
+      if (!found.rows[0].owned) throw new Error('Application database belongs to another owner');
+    } else {
+      // CREATE DATABASE cannot run inside a transaction; serialize via a session lock.
+      await client.query(`CREATE DATABASE ${escapeIdentifier(name)}`);
+    }
+  } finally {
+    try {
+      await client.query('SELECT pg_advisory_unlock(758294)');
+    } finally {
+      client.release();
+      await pool.end();
+    }
+  }
+  url.pathname = '/' + name;
+  url.searchParams.delete('database');
+  url.searchParams.delete('dbname');
+  return url.toString();
+}
+
+async function verifyApplicationDatabase(owner: Pool): Promise<void> {
+  const tables = await owner.query(`SELECT schemaname,tablename FROM pg_tables
+    WHERE schemaname NOT IN ('pg_catalog','information_schema') AND schemaname NOT LIKE 'pg_%'`);
+  if (!tables.rowCount) return;
+  const marker = await owner.query("SELECT to_regclass('public.schema_migrations') AS name");
+  if (marker.rows[0].name) {
+    const migrations = await owner.query('SELECT name FROM public.schema_migrations');
+    // Recover a previously interrupted initial migration, which leaves an empty marker.
+    if (tables.rowCount === 1 && !migrations.rowCount) return;
+    const product = await owner.query(`SELECT relrowsecurity AND relforcerowsecurity AS protected
+      FROM pg_class WHERE oid=to_regclass('public.products')`);
+    if (migrations.rows.some((m) => m.name === '001_foundation.sql') && product.rows[0]?.protected)
+      return;
+  }
+  throw new Error('Application database contains unrecognized data; initialization refused');
 }
 
 export function runtimeEnvironment(

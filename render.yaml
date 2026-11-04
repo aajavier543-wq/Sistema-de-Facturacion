@@ -17,8 +17,10 @@ services:
         value: production
       - key: MIGRATION_DATABASE_URL
         fromDatabase:
-          name: nexo-facturacion-db
+          name: farma-educa-db
           property: connectionString
+      - key: APP_DATABASE_NAME
+        value: nexo_facturacion
       - key: APP_DB_PASSWORD
         generateValue: true
       - key: BOOTSTRAP_EMAIL
@@ -29,11 +31,3 @@ services:
         value: Empresa de demostración
       - key: BOOTSTRAP_RIF
         value: J-00000000-1
-databases:
-  - name: nexo-facturacion-db
-    plan: free
-    region: oregon
-    postgresMajorVersion: '17'
-    databaseName: nexo
-    user: nexo_owner
-    ipAllowList: []

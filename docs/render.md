@@ -4,9 +4,21 @@ Esta guía prepara un despliegue; no crea servicios ni publica automáticamente.
 
 ## Despliegue de desarrollo con Blueprint
 
-El archivo raíz `render.yaml` define una API + interfaz y PostgreSQL 17 en la misma región.
-Solicita planes gratuitos; revisa su disponibilidad, caducidad, suspensión y límites actuales
-en Render antes de crear recursos. No se selecciona automáticamente un plan de pago.
+El archivo raíz `render.yaml` define una API + interfaz gratuita en Oregon y referencia
+la instancia PostgreSQL existente `farma-educa-db` de ese mismo workspace. No intenta crear
+una segunda instancia gratuita ni modificar los servicios `farma-educa` y `domino-club`.
+Revisa los límites de capacidad, caducidad y suspensión del plan gratuito en Render.
+
+El arranque crea una **base lógica separada** `nexo_facturacion` dentro de esa instancia,
+mediante `APP_DATABASE_NAME`. Las tablas de la aplicación original se conservan en su base
+actual. Ambas bases comparten recursos y disponibilidad de la instancia; no son instancias
+independientes. Se requiere PostgreSQL 16 o superior y permiso CREATEDB del propietario.
+Render documenta esta modalidad en:
+https://render.com/docs/postgresql-creating-connecting#adding-multiple-databases-to-a-single-instance
+
+Si la base destino ya existe con datos no reconocidos, la inicialización se detiene antes
+de ejecutar migraciones. No se eliminan tablas ni bases ni se restablecen contraseñas.
+Para usar otra instancia, cambia el nombre de `fromDatabase` y verifica la región del servicio.
 
 Con el código publicado en `main`, abre:
 
@@ -18,14 +30,15 @@ aplicación. La empresa y RIF del Blueprint son ficticios, solo para desarrollo.
 
 El build usa `scripts/render-build.sh`. El arranque usa `backend/dist/scripts/start-render.js`:
 
-1. Crea el rol restringido `erp_app` si no existe, sin cambiar contraseñas existentes.
-2. Aplica migraciones una vez y comprueba el acceso del rol restringido.
+1. Crea o selecciona `nexo_facturacion` en la instancia existente sin migrar la base original.
+2. Crea el rol restringido `erp_app` si no existe, aplica migraciones en la base separada y
+   comprueba el acceso del rol restringido. No cambia contraseñas existentes.
 3. Crea empresa, sucursal y administrador si no existen. Los reinicios no duplican registros
    ni restablecen contraseñas. Cambiar una variable de bootstrap no modifica una cuenta existente.
 4. Inicia el proceso HTTP hijo con `DATABASE_URL` del rol restringido y elimina de su entorno
    las credenciales del propietario, bootstrap y API de Render.
 
-La inicialización requiere que el propietario suministrado por Render pueda crear roles.
+La inicialización requiere que el propietario suministrado por Render pueda crear bases y roles.
 Si no puede, el despliegue falla explícitamente en vez de servir HTTP como propietario.
 Los secretos de inicialización permanecen en la configuración del servicio y en el proceso
 supervisor; el proceso que atiende HTTP no los hereda. Esta es una configuración de demostración.
@@ -35,6 +48,13 @@ Una vez que Render asigne la URL, comprobar `/api/health/ready`, iniciar sesión
 producto, ajustar existencias y calcular una cotización. Un build exitoso no confirma por sí
 solo que el servicio remoto funciona. El Blueprint mantiene el autodespliegue desactivado;
 los siguientes cambios requieren un despliegue manual.
+
+Si el Blueprint ya falló por el límite de una base gratuita, abre su pantalla **Syncs** y pulsa
+**Manual sync** después de publicar esta corrección en `main`. La referencia `fromDatabase`
+puede apuntar a una instancia existente fuera del Blueprint; no es necesario borrar la base
+gratuita para volver a intentarlo. Asegúrate de conservar el email y contraseña de bootstrap
+que elegiste al crear el Blueprint; Render ignora nuevas variables `sync: false` al actualizar
+un Blueprint existente.
 
 ## Operación con tareas administrativas separadas
 
