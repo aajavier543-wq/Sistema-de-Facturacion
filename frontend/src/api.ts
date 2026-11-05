@@ -1,5 +1,15 @@
 import { useEffect, useState } from 'react';
 import type { Api, Session } from './types';
+export class ApiError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+    readonly code?: string,
+  ) {
+    super(message);
+    this.name = 'ApiError';
+  }
+}
 export function makeApi(session: Session | null, tenant: string, onUnauthorized: () => void): Api {
   return async <T>(
     path: string,
@@ -24,7 +34,7 @@ export function makeApi(session: Session | null, tenant: string, onUnauthorized:
     if (!response.ok) {
       if (response.status === 401 && session) onUnauthorized();
       const message = data?.message;
-      throw new Error(
+      throw new ApiError(
         typeof message === 'string'
           ? message
           : Array.isArray(message)
@@ -34,6 +44,8 @@ export function makeApi(session: Session | null, tenant: string, onUnauthorized:
                 )
                 .join('; ')
             : 'No se pudo completar la operación. Intenta nuevamente.',
+        response.status,
+        typeof data?.code === 'string' ? data.code : undefined,
       );
     }
     return data as T;

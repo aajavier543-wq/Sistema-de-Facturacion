@@ -2592,3 +2592,38 @@ td small {
   margin-top: 7px;
   color: #64748b;
 }
+.ocr-progress {
+  display: flex;
+  justify-content: space-between;
+  gap: 18px;
+  align-items: center;
+  margin: 12px 0 20px;
+  padding: 16px;
+  border: 1px solid #dce5f1;
+  border-radius: 8px;
+  background: #f5f8fd;
+}
+.ocr-progress > div {
+  display: grid;
+  gap: 7px;
+  min-width: 0;
+}
+.ocr-progress strong {
+  font-size: 13px;
+}
+.ocr-progress span,
+.ocr-progress small {
+  color: #64748b;
+  font-size: 12px;
+}
+.ocr-progress progress {
+  width: min(340px, 100%);
+  height: 6px;
+  accent-color: #2161ce;
+}
+@media (max-width: 600px) {
+  .ocr-progress {
+    align-items: stretch;
+    flex-direction: column;
+  }
+}

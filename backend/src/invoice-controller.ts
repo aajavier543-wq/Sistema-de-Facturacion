@@ -5,6 +5,9 @@ import {
   Get,
   Post,
   Req,
+  Res,
+  HttpCode,
+  HttpException,
   UploadedFile,
   UseGuards,
   UseInterceptors,
@@ -14,7 +17,9 @@ import { AuthRequest, requireAdmin, TenantGuard } from './auth';
 import { Database } from './database';
 import { InvoiceOcr, ocrOptionsSchema } from './invoice-ocr';
 import { InvoiceImporter, invoiceReviewSchema } from './invoice-import';
-import { parse } from './validation';
+import { parse, uuid } from './validation';
+import { z } from 'zod';
+import type { Response } from 'express';
 import { invoiceExample } from './invoice-example';
 import { seedInvoiceExample } from './catalog-import';
 
@@ -30,9 +35,11 @@ export class InvoiceImageController {
   @UseInterceptors(
     FileInterceptor('image', { limits: { fileSize: 8 * 1024 * 1024, files: 1, fields: 2 } }),
   )
-  read(
+  async read(
     @Req() req: AuthRequest,
+    @Res({ passthrough: true }) res: Response,
     @Body('options') options: unknown,
+    @Body('requestId') requestId: unknown,
     @UploadedFile() file: { buffer: Buffer; mimetype: string; size: number } | undefined,
   ) {
     requireAdmin(req.principal);
@@ -46,7 +53,33 @@ export class InvoiceImageController {
         throw new BadRequestException('Opciones de lectura inválidas');
       }
     }
-    return this.ocr.recognize(file, parse(ocrOptionsSchema, input));
+    const id = requestId === undefined ? undefined : parse(uuid, requestId);
+    const controller = new AbortController();
+    const disconnect = () => {
+      if (!res.writableEnded) controller.abort();
+    };
+    res.once('close', disconnect);
+    if (req.aborted || res.destroyed) controller.abort();
+    try {
+      return await this.ocr.recognize(file, parse(ocrOptionsSchema, input), {
+        principal: req.principal,
+        requestId: id,
+        signal: controller.signal,
+      });
+    } catch (error) {
+      if (error instanceof HttpException && error.getStatus() === 429)
+        res.setHeader('Retry-After', '2');
+      throw error;
+    } finally {
+      res.removeListener('close', disconnect);
+    }
+  }
+  @Post('cancel')
+  @HttpCode(200)
+  cancel(@Req() req: AuthRequest, @Body() body: unknown) {
+    requireAdmin(req.principal);
+    const { requestId } = parse(z.object({ requestId: uuid }).strict(), body);
+    return this.ocr.cancel(req.principal, requestId);
   }
   @Get('example') example(@Req() req: AuthRequest) {
     requireAdmin(req.principal);

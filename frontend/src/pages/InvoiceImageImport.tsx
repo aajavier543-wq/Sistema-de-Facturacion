@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import Decimal from 'decimal.js';
+import { ApiError } from '../api';
 import { Button, Dialog, Feedback, Icon } from '../components/ui';
 import { money, type Api } from '../types';
 import type { GoodsDocument } from '../goods-types';
@@ -60,6 +61,13 @@ type Header = {
   paymentTerms: 'cash' | 'credit';
   dueDate: string;
 };
+type ReadOperation = {
+  id: string;
+  controller: AbortController;
+  reason?: 'user' | 'timeout' | 'closed';
+  cancelPromise?: Promise<void>;
+  timer?: ReturnType<typeof setTimeout>;
+};
 const dec = (v: string) => v.replace(',', '.');
 function calc(rows: Row[]) {
   try {
@@ -104,6 +112,49 @@ export function InvoiceImageImport({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
+  const [isReading, setIsReading] = useState(false),
+    [cancelling, setCancelling] = useState(false),
+    [elapsed, setElapsed] = useState(0);
+  const readOperation = useRef<ReadOperation | null>(null);
+  useEffect(() => {
+    if (!isReading) return;
+    const started = Date.now();
+    setElapsed(0);
+    const timer = setInterval(() => setElapsed(Math.floor((Date.now() - started) / 1000)), 1000);
+    return () => clearInterval(timer);
+  }, [isReading]);
+  useEffect(
+    () => () => {
+      const op = readOperation.current;
+      if (op) {
+        readOperation.current = null;
+        op.reason = 'closed';
+        if (op.timer) clearTimeout(op.timer);
+        op.cancelPromise ??= cancelOnServer(op.id);
+        op.controller.abort();
+      }
+    },
+    [],
+  );
+  async function cancelOnServer(id: string) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 2000);
+    try {
+      await api('/goods/invoice-images/cancel', 'POST', { requestId: id }, controller.signal);
+    } catch {
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+  function stopReading(reason: 'user' | 'timeout') {
+    const op = readOperation.current;
+    if (!op || op.reason) return;
+    op.reason = reason;
+    setCancelling(true);
+    op.cancelPromise = cancelOnServer(op.id);
+    op.controller.abort();
+  }
+
   const attempt = useRef<{ signature: string; key: string } | null>(null);
   useEffect(() => {
     if (!file) {
@@ -202,6 +253,7 @@ export function InvoiceImageImport({
     setError('');
   }
   async function read() {
+    if (readOperation.current || busy) return;
     if (!file) {
       setError('Selecciona una imagen.');
       return;
@@ -210,21 +262,49 @@ export function InvoiceImageImport({
       setError('La imagen no puede superar 8 MB.');
       return;
     }
+    const op: ReadOperation = { id: crypto.randomUUID(), controller: new AbortController() };
+    readOperation.current = op;
+    op.timer = setTimeout(() => stopReading('timeout'), detailed ? 110000 : 80000);
     setBusy(true);
+    setIsReading(true);
+    setCancelling(false);
     setError('');
     setNotice('');
     try {
       const body = new FormData();
       body.append('image', file);
       body.append('options', JSON.stringify({ rotation, crop, detailed }));
-      load({
-        ...(await api<Result>('/goods/invoice-images/read', 'POST', body)),
-        sourceKind: 'image',
-      });
+      body.append('requestId', op.id);
+      const result = await api<Result>(
+        '/goods/invoice-images/read',
+        'POST',
+        body,
+        op.controller.signal,
+      );
+      if (!op.reason && readOperation.current === op) load({ ...result, sourceKind: 'image' });
     } catch (e) {
-      setError((e as Error).message);
+      if (readOperation.current === op) {
+        if (op.reason === 'user')
+          setNotice('Lectura cancelada. Puedes volver a intentarlo o cerrar esta ventana.');
+        else if (op.reason === 'timeout')
+          setError(
+            'Se agotó el tiempo de espera y se canceló la lectura. Puedes reintentar con la foto recortada.',
+          );
+        else if (e instanceof ApiError && e.code === 'OCR_BUSY')
+          setError(
+            'El lector está ocupado con otra imagen y tiene un tiempo límite. Puedes volver a intentarlo en unos segundos; no se registró ningún documento.',
+          );
+        else setError((e as Error).message);
+      }
     } finally {
-      setBusy(false);
+      if (op.timer) clearTimeout(op.timer);
+      if (op.cancelPromise) await op.cancelPromise;
+      if (readOperation.current === op) {
+        readOperation.current = null;
+        setBusy(false);
+        setIsReading(false);
+        setCancelling(false);
+      }
     }
   }
   async function example() {
@@ -331,6 +411,23 @@ export function InvoiceImageImport({
     >
       <div className="invoice-import">
         <Feedback error={error} notice={notice} />
+        {isReading && (
+          <div className="ocr-progress">
+            <div role="status" aria-live="polite">
+              <strong>{cancelling ? 'Cancelando lectura…' : 'Leyendo documento…'}</strong>
+              <span aria-live="off">
+                {elapsed} s · Límite de espera: {detailed ? 110 : 80} s
+              </span>
+              <progress aria-label="Lectura de documento en curso" />
+              <small>
+                Puedes detener la lectura y volver a intentarlo. Esta lectura no modifica el inventario.
+              </small>
+            </div>
+            <Button disabled={cancelling} onClick={() => stopReading('user')}>
+              {cancelling ? 'Cancelando…' : 'Cancelar lectura'}
+            </Button>
+          </div>
+        )}
         {!header ? (
           <>
             <div className="invoice-upload-grid">

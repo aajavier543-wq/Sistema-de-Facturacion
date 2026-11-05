@@ -12,6 +12,7 @@ import { migrate } from '../scripts/migrate';
 import { hashPassword } from '../src/security';
 import { invoiceExample } from '../src/invoice-example';
 import { invoiceImage, deliveryImage } from './invoice-fixture';
+import { InvoiceOcr } from '../src/invoice-ocr';
 
 const dbName = 'goods_test_' + randomBytes(6).toString('hex');
 const tenant = randomUUID(),
@@ -1139,6 +1140,47 @@ test('las notas de entrega se importan como documentos no fiscales, sin inventar
   assert.equal(received.body.control_number, null);
 });
 
+test('cancelación OCR por HTTP exige administrador y propiedad de empresa/usuario y libera el lector', async () => {
+  const ocr = app.get(InvoiceOcr),
+    buffer = await invoiceImage(),
+    id = randomUUID();
+  const cancelled = assert.rejects(
+    ocr.recognize(
+      { buffer, size: buffer.length, mimetype: 'image/png' },
+      { rotation: 0, crop: null, detailed: true },
+      { principal, requestId: id },
+    ),
+    (e: any) => e.getStatus() === 409 && e.getResponse().code === 'OCR_CANCELLED',
+  );
+  assert.equal(
+    (await request('/goods/invoice-images/cancel', { requestId: id }, undefined, cashierToken))
+      .status,
+    403,
+  );
+  const other = await request(
+    '/goods/invoice-images/cancel',
+    { requestId: id },
+    undefined,
+    foreignToken,
+    foreignTenant,
+  );
+  assert.equal(other.status, 200);
+  assert.equal(other.body.cancelled, false);
+  const result = await request('/goods/invoice-images/cancel', { requestId: id });
+  assert.equal(result.status, 200);
+  assert.equal(result.body.cancelled, true);
+  await cancelled;
+  assert.equal(
+    (await request('/goods/invoice-images/cancel', { requestId: id })).body.cancelled,
+    false,
+  );
+  assert.equal(
+    (await ocr.recognize({ buffer, size: buffer.length, mimetype: 'image/png' })).reading
+      .invoiceNumber,
+    '144',
+  );
+});
+
 if (process.env.RUN_BROWSER === '1')
   test('navegador: factura de compra y ajuste de salida con documento e historial', async () => {
     const browser = await chromium.launch({
@@ -1649,6 +1691,95 @@ if (process.env.RUN_BROWSER === '1')
       assert.equal(doc.body.lines.length, 6);
       assert.equal(doc.body.status, 'draft');
       assert.equal(Number((await stock(doc.body.lines[0].product_id)).quantity), 0);
+      assert.deepEqual(errors, []);
+    } finally {
+      await browser.close();
+    }
+  });
+
+if (process.env.RUN_BROWSER === '1')
+  test('navegador: cancelar y agotar el tiempo no dejan la pantalla bloqueada y permiten una nueva lectura', async () => {
+    const browser = await chromium.launch({
+      executablePath: process.env.CHROMIUM_PATH ?? '/usr/bin/chromium',
+      headless: true,
+      args: ['--no-sandbox', '--disable-dev-shm-usage'],
+    });
+    try {
+      const page = await browser.newPage({
+        viewport: { width: 1440, height: 1000 },
+        locale: 'es-VE',
+        timezoneId: 'America/Caracas',
+      });
+      const errors: string[] = [];
+      page.on('pageerror', (e) => errors.push(e.message));
+      await page.goto(base.replace(/\/api$/, ''));
+      await page.getByLabel('Correo electrónico').fill('goods-admin@example.test');
+      await page.getByLabel('Contraseña', { exact: true }).fill(password);
+      await page.getByRole('button', { name: 'Ingresar al sistema' }).click();
+      await page.getByRole('heading', { name: 'Resumen de operaciones' }).waitFor();
+      await page.getByRole('button', { name: 'Facturas de compra', exact: true }).click();
+      await page.getByRole('button', { name: 'Importar imagen de factura', exact: true }).click();
+      const dialog = page.getByRole('dialog');
+      await dialog
+        .getByLabel('Imagen de factura')
+        .setInputFiles({
+          name: 'lectura-reintentable.png',
+          mimeType: 'image/png',
+          buffer: await invoiceImage(),
+        });
+      let pendingRoute: any;
+      await page.route('**/api/goods/invoice-images/read', (route) => {
+        pendingRoute = route;
+      });
+      await dialog.getByRole('button', { name: 'Leer imagen y preparar factura' }).click();
+      await dialog.getByRole('button', { name: 'Cancelar lectura', exact: true }).waitFor();
+      if (process.env.SCREENSHOT_DIR)
+        await page.screenshot({
+          path: process.env.SCREENSHOT_DIR + '/ocr-cancelable.png',
+          fullPage: true,
+        });
+      await dialog.getByRole('button', { name: 'Cancelar lectura', exact: true }).click();
+      await dialog.getByRole('button', { name: 'Leer imagen y preparar factura' }).waitFor();
+      assert.equal(
+        await dialog.getByRole('button', { name: 'Leer imagen y preparar factura' }).isEnabled(),
+        true,
+      );
+      await dialog.getByRole('status').filter({ hasText: 'Lectura cancelada' }).waitFor();
+      await pendingRoute?.abort().catch(() => {});
+      await page.clock.install();
+      await dialog.getByRole('button', { name: 'Leer imagen y preparar factura' }).click();
+      await dialog.getByRole('button', { name: 'Cancelar lectura', exact: true }).waitFor();
+      await page.clock.fastForward(81000);
+      await dialog.getByRole('button', { name: 'Leer imagen y preparar factura' }).waitFor();
+      await dialog.getByRole('alert').filter({ hasText: 'Se agotó el tiempo' }).waitFor();
+      assert.equal(
+        await dialog.getByRole('button', { name: 'Leer imagen y preparar factura' }).isEnabled(),
+        true,
+      );
+      await pendingRoute?.abort().catch(() => {});
+      await page.unroute('**/api/goods/invoice-images/read');
+      await page.route(
+        '**/api/goods/invoice-images/read',
+        (route) =>
+          route.fulfill({
+            status: 429,
+            contentType: 'application/json',
+            body: JSON.stringify({ code: 'OCR_BUSY', message: 'Lector ocupado' }),
+          }),
+        { times: 1 },
+      );
+      await dialog.getByRole('button', { name: 'Leer imagen y preparar factura' }).click();
+      await dialog.getByRole('alert').filter({ hasText: 'El lector está ocupado' }).waitFor();
+      assert.equal(
+        await dialog.getByRole('button', { name: 'Leer imagen y preparar factura' }).isEnabled(),
+        true,
+      );
+      await dialog.getByRole('button', { name: 'Leer imagen y preparar factura' }).click();
+      await dialog.getByLabel('Número de factura', { exact: true }).waitFor({ timeout: 30000 });
+      assert.equal(
+        await dialog.getByLabel('Número de factura', { exact: true }).inputValue(),
+        '144',
+      );
       assert.deepEqual(errors, []);
     } finally {
       await browser.close();

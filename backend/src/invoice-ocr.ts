@@ -1,96 +1,71 @@
-import {
-  BadRequestException,
-  HttpException,
-  Injectable,
-  ServiceUnavailableException,
-} from '@nestjs/common';
-import { createHash } from 'node:crypto';
-import { mkdir } from 'node:fs/promises';
+import { BadRequestException, HttpException, Injectable, OnModuleDestroy } from '@nestjs/common';
+import { fork, type ChildProcess } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import { resolve } from 'node:path';
-import sharp from 'sharp';
-import { createWorker, PSM, type Page } from 'tesseract.js';
-import { z } from 'zod';
-import { parseInvoiceText, readingScore, type InvoiceReading } from './invoice-parser';
-import { spatialText, type OcrWord } from './document-layout';
-export const ocrOptionsSchema = z
-  .object({
-    rotation: z.union([z.literal(0), z.literal(90), z.literal(180), z.literal(270)]).default(0),
-    detailed: z.boolean().default(false),
-    crop: z
-      .object({
-        x: z.number().min(0).max(1),
-        y: z.number().min(0).max(1),
-        width: z.number().min(0.05).max(1),
-        height: z.number().min(0.05).max(1),
-      })
-      .strict()
-      .refine((v) => v.x + v.width <= 1.000001 && v.y + v.height <= 1.000001)
-      .nullable()
-      .default(null),
-  })
-  .strict();
-export type OcrOptions = z.infer<typeof ocrOptionsSchema>;
-function wordsOf(page: Page): OcrWord[] {
-  return (page.blocks ?? [])
-    .flatMap((b) =>
-      b.paragraphs.flatMap((p) =>
-        p.lines.flatMap((l) =>
-          l.words.map((w) => ({ text: w.text, ...w.bbox, confidence: w.confidence })),
-        ),
-      ),
-    )
-    .slice(0, 15000);
-}
-function isComplete(d: InvoiceReading) {
-  return (
-    d.documentType !== 'unknown' &&
-    d.supplierRif !== null &&
-    d.invoiceNumber !== null &&
-    d.documentDate !== null &&
-    (d.documentType !== 'invoice' || d.controlNumber !== null) &&
-    d.declaredTotal !== null &&
-    d.lines.length > 0 &&
-    d.lines.every((l) => !l.needsReview && l.quantity !== null && l.unitCost !== null) &&
-    !d.warnings.some((w) => /no coincide/.test(w))
+import type { Principal } from './database';
+import type { InvoiceReading } from './invoice-parser';
+import type { OcrOptions } from './ocr-options';
+export { ocrOptionsSchema, type OcrOptions } from './ocr-options';
+export type OcrResult = {
+  reading: InvoiceReading;
+  rawText: string;
+  confidence: number;
+  imageHash: string;
+  attempts: number;
+  engine: string;
+};
+type Context = { principal?: Principal; requestId?: string; signal?: AbortSignal };
+type Outcome = { result: OcrResult } | { error: HttpException };
+type ActiveTask = {
+  id: string;
+  principal?: Principal;
+  stop: (error: HttpException) => void;
+  done: Promise<void>;
+};
+const cancelled = () =>
+  new HttpException(
+    { code: 'OCR_CANCELLED', message: 'Lectura cancelada. Puedes volver a intentarlo.' },
+    409,
   );
-}
-/** Compensate uneven illumination using a small local background map, bounded to the resized page. */
-async function normalizeLighting(image: Buffer) {
-  const { data, info } = await sharp(image)
-    .removeAlpha()
-    .greyscale()
-    .raw()
-    .toBuffer({ resolveWithObject: true });
-  const background = await sharp(data, {
-    raw: { width: info.width, height: info.height, channels: 1 },
-  })
-    .resize(64, 64, { fit: 'fill' })
-    .blur(3)
-    .resize(info.width, info.height, { fit: 'fill' })
-    .raw()
-    .toBuffer();
-  const corrected = Buffer.allocUnsafe(data.length);
-  for (let i = 0; i < data.length; i++)
-    corrected[i] = Math.min(255, Math.round((data[i]! * 245) / Math.max(90, background[i]!)));
-  return sharp(corrected, { raw: { width: info.width, height: info.height, channels: 1 } })
-    .normalise()
-    .sharpen()
-    .png()
-    .toBuffer();
-}
+const failed = () =>
+  new HttpException(
+    {
+      code: 'OCR_ENGINE_FAILED',
+      message:
+        'El motor de lectura no pudo completar la imagen y se reinició. Puedes volver a intentarlo o usar una foto recortada.',
+    },
+    503,
+  );
+
 @Injectable()
-export class InvoiceOcr {
-  private busy = false;
+export class InvoiceOcr implements OnModuleDestroy {
+  private active: ActiveTask | null = null;
+  protected deadlineMs(detailed: boolean): number {
+    return detailed ? 90_000 : 60_000;
+  }
+  protected spawnWorker(): ChildProcess {
+    // This process needs local files only, never database, bootstrap or Render credentials.
+    const env: NodeJS.ProcessEnv = {};
+    for (const name of ['NODE_ENV', 'PATH', 'TMPDIR', 'LANG', 'TZ'])
+      if (process.env[name]) env[name] = process.env[name];
+    return fork(resolve(__dirname, '../scripts/invoice-ocr-child.js'), [], {
+      stdio: ['ignore', 'ignore', 'ignore', 'ipc'],
+      serialization: 'advanced',
+      execArgv: [],
+      env,
+    });
+  }
   async recognize(
     file: { buffer: Buffer; mimetype: string; size: number } | undefined,
     options: OcrOptions = { rotation: 0, detailed: false, crop: null },
-  ) {
+    context: Context = {},
+  ): Promise<OcrResult> {
     if (!file || !Buffer.isBuffer(file.buffer))
       throw new BadRequestException('Selecciona una imagen del documento');
-    if (file.size > 8 * 1024 * 1024 || file.buffer.length > 8 * 1024 * 1024)
+    const b = file.buffer;
+    if (file.size > 8 * 1024 * 1024 || b.length > 8 * 1024 * 1024)
       throw new BadRequestException('La imagen no puede superar 8 MB');
-    const b = file.buffer,
-      jpeg = b.length > 3 && b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff,
+    const jpeg = b.length > 3 && b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff,
       png = b.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])),
       webp =
         b.length > 12 &&
@@ -98,129 +73,135 @@ export class InvoiceOcr {
         b.toString('ascii', 8, 12) === 'WEBP';
     if (!jpeg && !png && !webp)
       throw new BadRequestException('Solo se admiten imágenes JPEG, PNG o WebP reales');
-    if (this.busy)
+    if (context.signal?.aborted) throw cancelled();
+    if (this.active)
       throw new HttpException(
-        { message: 'Hay un documento en lectura. Intenta nuevamente en unos segundos.' },
+        {
+          code: 'OCR_BUSY',
+          retryAfterSeconds: 2,
+          message:
+            'El lector está ocupado con otra imagen. La lectura tiene un tiempo límite; vuelve a intentarlo en unos segundos.',
+        },
         429,
       );
-    this.busy = true;
-    let worker: Awaited<ReturnType<typeof createWorker>> | null = null,
-      timer: ReturnType<typeof setTimeout> | undefined;
-    try {
-      const input = sharp(b, { limitInputPixels: 12000000, animated: false });
-      const meta = await input.metadata();
-      if (
-        !meta.width ||
-        !meta.height ||
-        meta.width * meta.height > 12000000 ||
-        (meta.pages ?? 1) > 1
-      )
-        throw new BadRequestException('La imagen debe ser una sola página de hasta 12 megapíxeles');
-      let page = await input
-        .autoOrient()
-        .rotate(options.rotation)
-        .flatten({ background: '#ffffff' })
-        .greyscale()
-        .png()
-        .toBuffer();
-      if (options.crop) {
-        const m = await sharp(page).metadata(),
-          c = options.crop;
-        const left = Math.round(c.x * (m.width! - 1)),
-          top = Math.round(c.y * (m.height! - 1));
-        page = await sharp(page)
-          .extract({
-            left,
-            top,
-            width: Math.min(m.width! - left, Math.max(1, Math.round(c.width * m.width!))),
-            height: Math.min(m.height! - top, Math.max(1, Math.round(c.height * m.height!))),
-          })
-          .png()
-          .toBuffer();
-      }
-      const image = await sharp(page)
-        .resize({ width: 2200, height: 3000, fit: 'inside' })
-        .normalise()
-        .png()
-        .toBuffer();
-      const cachePath = '/tmp/nexo-ocr-cache';
-      await mkdir(cachePath, { recursive: true });
-      worker = await createWorker('spa', 1, {
-        langPath: resolve(__dirname, '../../../resources/ocr'),
-        cachePath,
-        gzip: true,
-        logger: () => {},
-        errorHandler: () => {},
-      });
-      const recognize = async () => {
-        let best: { reading: InvoiceReading; rawText: string; confidence: number } | null = null,
-          attempts = 0;
-        const attempt = async (buffer: Buffer, mode: PSM) => {
-          await worker!.setParameters({
-            tessedit_pageseg_mode: mode,
-            preserve_interword_spaces: '1',
-            user_defined_dpi: '300',
-          });
-          const r = await worker!.recognize(
-            buffer,
-            { rotateAuto: true },
-            { text: true, blocks: true },
-          );
-          attempts++;
-          const words = wordsOf(r.data),
-            spatial = spatialText(words),
-            plain = r.data.text;
-          const candidates = [
-            { reading: parseInvoiceText(spatial, spatial, words), rawText: spatial },
-            { reading: parseInvoiceText(plain, plain), rawText: plain },
-          ];
-          for (const c of candidates) {
-            const candidate = {
-              ...c,
-              rawText: c.rawText.slice(0, 50000),
-              confidence: Math.round(r.data.confidence),
-            };
-            if (!best || readingScore(candidate.reading) > readingScore(best.reading))
-              best = candidate;
-          }
-        };
-        await attempt(image, PSM.AUTO);
-        if (options.detailed || !isComplete(best!.reading)) await attempt(image, PSM.SPARSE_TEXT);
-        if (options.detailed || !isComplete(best!.reading))
-          await attempt(await normalizeLighting(image), PSM.SINGLE_BLOCK);
-        const chosen = best!;
-        if (chosen.reading.lines.length === 0)
-          chosen.reading.warnings.push(
-            'Prueba la lectura detallada, gira la imagen o selecciona solo el área del documento para excluir el fondo.',
-          );
-        return {
-          ...chosen,
-          imageHash: createHash('sha256').update(b).digest('hex'),
-          attempts,
-          engine: 'tesseract-layout-v2',
-        };
+    let complete!: () => void;
+    const done = new Promise<void>((r) => {
+      complete = r;
+    });
+    const task: ActiveTask = {
+      id: context.requestId ?? randomUUID(),
+      principal: context.principal,
+      stop: () => {},
+      done,
+    };
+    this.active = task;
+    return new Promise<OcrResult>((resolveResult, rejectResult) => {
+      let child: ChildProcess | undefined,
+        outcome: Outcome | undefined,
+        settled = false;
+      let cleanupTimer: ReturnType<typeof setTimeout> | undefined;
+      const finish = () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(deadline);
+        if (cleanupTimer) clearTimeout(cleanupTimer);
+        context.signal?.removeEventListener('abort', onAbort);
+        if (this.active === task) this.active = null;
+        complete();
+        if (outcome && 'result' in outcome) resolveResult(outcome.result);
+        else rejectResult(outcome && 'error' in outcome ? outcome.error : failed());
       };
-      const timeout = new Promise<never>((_, reject) => {
-        timer = setTimeout(
-          () =>
-            reject(
-              new ServiceUnavailableException(
-                'La lectura tardó demasiado. Recorta los bordes o usa una foto más nítida.',
-              ),
+      const stop = (error?: HttpException) => {
+        if (settled) return;
+        // Cancellation can override a result that has not yet been delivered/reaped.
+        if (error) outcome = { error };
+        try {
+          if (child?.pid && child.exitCode === null && child.signalCode === null)
+            child.kill('SIGKILL');
+        } catch {}
+        if (!child?.pid) {
+          finish();
+          return;
+        }
+        // Bounded cleanup protects against a missing child event after termination.
+        cleanupTimer ??= setTimeout(finish, 1000);
+      };
+      task.stop = (error) => stop(error);
+      const onAbort = () => stop(cancelled());
+      const deadline = setTimeout(
+        () =>
+          stop(
+            new HttpException(
+              {
+                code: 'OCR_TIMEOUT',
+                message:
+                  'La lectura superó el tiempo límite y se canceló. El lector está disponible para volver a intentarlo; prueba recortando la foto.',
+              },
+              504,
             ),
-          90000,
-        );
-      });
-      return await Promise.race([recognize(), timeout]);
-    } catch (error) {
-      if (error instanceof HttpException) throw error;
-      throw new BadRequestException(
-        'No se pudo leer esta imagen. Usa una fotografía nítida en JPEG, PNG o WebP.',
+          ),
+        this.deadlineMs(options.detailed),
       );
-    } finally {
-      if (timer) clearTimeout(timer);
-      if (worker) await worker.terminate().catch(() => {});
-      this.busy = false;
+      context.signal?.addEventListener('abort', onAbort, { once: true });
+      try {
+        child = this.spawnWorker();
+        child.once('error', () => {
+          outcome = { error: failed() };
+          stop();
+        });
+        child.once('exit', () => finish());
+        child.once('close', () => finish());
+        child.on('message', (message: { type?: string; result?: OcrResult; code?: string }) => {
+          if (outcome || settled) return;
+          outcome =
+            message.type === 'result' && message.result
+              ? { result: message.result }
+              : {
+                  error:
+                    message.code === 'OCR_INVALID_IMAGE'
+                      ? new BadRequestException({
+                          code: 'OCR_INVALID_IMAGE',
+                          message:
+                            'La imagen debe ser una sola página de hasta 12 megapíxeles. Revisa el archivo o usa una foto más pequeña.',
+                        })
+                      : failed(),
+                };
+          stop();
+        });
+        if (context.signal?.aborted) {
+          onAbort();
+          return;
+        }
+        child.send({ type: 'read', buffer: b, options }, (error) => {
+          if (error && !settled) {
+            outcome = { error: failed() };
+            stop();
+          }
+        });
+      } catch {
+        outcome = { error: failed() };
+        stop();
+      }
+    });
+  }
+  async cancel(principal: Principal, requestId: string) {
+    const task = this.active;
+    if (
+      !task ||
+      task.id !== requestId ||
+      task.principal?.tenantId !== principal.tenantId ||
+      task.principal?.userId !== principal.userId
+    )
+      return { cancelled: false };
+    task.stop(cancelled());
+    await task.done;
+    return { cancelled: true };
+  }
+  async onModuleDestroy() {
+    const task = this.active;
+    if (task) {
+      task.stop(cancelled());
+      await task.done;
     }
   }
 }

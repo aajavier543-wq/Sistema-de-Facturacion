@@ -4,7 +4,10 @@ En **Facturas de compra → Importar imagen de factura**, un administrador puede
 una fotografía JPEG, PNG o WebP (hasta 8 MB y 12 megapíxeles). El servidor valida los bytes,
 normaliza la imagen y ejecuta Tesseract en español. No utiliza un servicio OCR externo
 ni necesita una clave de IA. Solo se procesa una imagen a la vez por proceso; si hay otra
-lectura devuelve 429. La lectura tiene un límite de 90 segundos, después de iniciar el motor.
+lectura devuelve 429. El plazo abarca toda la operación, incluida la inicialización: 60 segundos en modo normal y
+90 en lectura detallada. El procesamiento se ejecuta en un proceso desechable separado de la API.
+Si el motor no arranca, se atasca o falla, el supervisor termina ese proceso y libera el lector.
+El resultado no espera un cierre interno del motor que pueda quedar pendiente.
 
 El lector reconstruye columnas por encabezados y posición de las palabras, con sinónimos
 como Cant/Cantidad, Descripción/Artículo y Costo/Precio unitario. Admite columnas en distinto
@@ -17,6 +20,24 @@ compensación de iluminación si la lectura inicial queda incompleta. **Lectura 
 fuerza las tres pasadas. Antes de leer puedes **Girar 90°** o arrastrar sobre la vista previa
 para seleccionar el papel y excluir pantalla, mesa o bordes. El recorte se calcula después
 del giro; el archivo subido no se modifica y su hash sigue identificando el original.
+
+Durante la lectura se muestra el tiempo transcurrido y **Cancelar lectura**. La cancelación
+aborta la petición y solicita al servidor detener exactamente esa operación. Empresa, usuario
+e identificador deben coincidir; no se permite cancelar lecturas de otros usuarios. Cerrar la
+conexión o apagar la aplicación también cancela la operación. El navegador tiene su propio
+límite de espera de 80/110 segundos para cubrir carga y conexión, y conserva la imagen para
+reintentar sin volver a seleccionarla. No hay reintentos automáticos indefinidos.
+
+Se admite un proceso OCR activo por instancia. Otra lectura recibe 429 con `Retry-After: 2`,
+sin iniciar otro motor. La ocupación se libera cuando termina o se recoge el proceso, con
+limpieza acotada; un temporizador antiguo no puede liberar una operación nueva. Los errores
+del motor se comunican con códigos y mensajes estáticos, sin texto de documentos ni stacks.
+El hijo no hereda credenciales de base de datos, bootstrap o Render. El modelo español se
+lee del recurso local verificado en cada lectura; se desactiva la caché modificable para que
+una interrupción durante el arranque no deje un modelo parcial que rompa lecturas posteriores.
+
+La cancelación no guarda artículos ni facturas y no mueve inventario. La ventana puede
+cerrarse tras cancelar para usar la entrada manual existente.
 
 La pantalla muestra la fotografía, proveedor, RIF, tipo y número de documento, control, fecha, cantidades,
 costos, descuentos, IVA y total para revisión. Los campos que no se reconocen quedan
