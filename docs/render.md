@@ -61,6 +61,24 @@ gratuita para volver a intentarlo. Asegúrate de conservar el email y contraseñ
 que elegiste al crear el Blueprint; Render ignora nuevas variables `sync: false` al actualizar
 un Blueprint existente.
 
+### Lector de facturas con Gemini
+
+El Blueprint configura `INVOICE_READER_PROVIDER=gemini` y
+`GEMINI_MODEL=gemini-flash-latest`. Añade `GEMINI_API_KEY` de forma privada en
+**nexo-facturacion-demo → Environment** y guarda/despliega. Una nueva variable
+`sync: false` no se configura sola al actualizar un Blueprint existente.
+La ausencia de esta clave no bloquea el arranque ni las compras manuales; la ventana
+**Importar imagen de factura** indica que falta conectar Gemini.
+
+Crea la clave en https://aistudio.google.com/api-keys y comprueba el cupo gratuito
+correspondiente al proyecto antes de usarla. La integración no habilita facturación;
+respeta la configuración y cuotas de esa cuenta. La fotografía se envía a Google,
+como informa la pantalla. Nunca uses una variable `VITE_*` ni compartas la clave por chat.
+El proceso HTTP conserva la clave Gemini, pero sigue excluyendo las credenciales
+administrativas de base de datos, bootstrap y Render.
+
+Consulta [facturas desde imágenes](invoice-images.md) para límites y revisión.
+
 ### Diagnóstico de arranque
 
 Los registros muestran la etapa activa con `[deployment]`:

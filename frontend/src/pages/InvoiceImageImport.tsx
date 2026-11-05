@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import Decimal from 'decimal.js';
-import { ApiError } from '../api';
+import { ApiError, useResource } from '../api';
 import { Button, Dialog, Feedback, Icon } from '../components/ui';
 import { money, type Api } from '../types';
 import type { GoodsDocument } from '../goods-types';
@@ -24,7 +24,7 @@ type Reading = {
   invoiceNumber: string | null;
   controlNumber: string | null;
   documentDate: string | null;
-  currency: 'VES' | 'USD';
+  currency: 'VES' | 'USD' | 'unknown';
   exchangeRate: string | null;
   declaredTotal: string | null;
   warnings: string[];
@@ -47,6 +47,7 @@ type Result = {
   imageHash: string | null;
   confidence: number | null;
   sourceKind?: 'example' | 'image';
+  engine?: string;
 };
 type Header = {
   purchaseDocumentType: 'invoice' | 'delivery_note' | '';
@@ -55,7 +56,7 @@ type Header = {
   invoiceNumber: string;
   controlNumber: string;
   documentDate: string;
-  currency: 'VES' | 'USD';
+  currency: 'VES' | 'USD' | '';
   exchangeRate: string;
   declaredTotal: string;
   paymentTerms: 'cash' | 'credit';
@@ -96,6 +97,16 @@ export function InvoiceImageImport({
   onImported: (d: GoodsDocument & { createdProducts: number; linkedProducts: number }) => void;
   onCatalogChanged: () => void;
 }) {
+  const reader = useResource<{
+    provider: string;
+    displayName: string;
+    configured: boolean;
+    external: boolean;
+    waitSeconds: number;
+  }>('invoice-reader-status', (signal) =>
+    api('/goods/invoice-images/status', 'GET', undefined, signal),
+  );
+  const externalReader = reader.data?.provider === 'gemini';
   const [file, setFile] = useState<File | null>(null);
   const [preview, setPreview] = useState('');
   const [rotation, setRotation] = useState<0 | 90 | 180 | 270>(0);
@@ -103,6 +114,7 @@ export function InvoiceImageImport({
     null,
   );
   const [detailed, setDetailed] = useState(false);
+  const waitSeconds = externalReader ? (reader.data?.waitSeconds ?? 90) + 20 : detailed ? 110 : 80;
   const [batchTax, setBatchTax] = useState('');
   const cropStart = useRef<{ x: number; y: number } | null>(null);
   const [result, setResult] = useState<Result | null>(null);
@@ -223,7 +235,7 @@ export function InvoiceImageImport({
       invoiceNumber: d.reading.invoiceNumber ?? '',
       controlNumber: d.reading.controlNumber ?? '',
       documentDate: d.reading.documentDate ?? '',
-      currency: d.reading.currency,
+      currency: d.reading.currency === 'unknown' ? '' : d.reading.currency,
       exchangeRate: d.reading.exchangeRate ?? '',
       declaredTotal: d.reading.declaredTotal ?? '',
       paymentTerms: d.reading.paymentTerms ?? 'cash',
@@ -254,6 +266,12 @@ export function InvoiceImageImport({
   }
   async function read() {
     if (readOperation.current || busy) return;
+    if (!reader.data?.configured) {
+      setError(
+        'El lector aún no está conectado. El administrador debe configurar la cuenta de Gemini.',
+      );
+      return;
+    }
     if (!file) {
       setError('Selecciona una imagen.');
       return;
@@ -264,7 +282,7 @@ export function InvoiceImageImport({
     }
     const op: ReadOperation = { id: crypto.randomUUID(), controller: new AbortController() };
     readOperation.current = op;
-    op.timer = setTimeout(() => stopReading('timeout'), detailed ? 110000 : 80000);
+    op.timer = setTimeout(() => stopReading('timeout'), waitSeconds * 1000);
     setBusy(true);
     setIsReading(true);
     setCancelling(false);
@@ -273,7 +291,10 @@ export function InvoiceImageImport({
     try {
       const body = new FormData();
       body.append('image', file);
-      body.append('options', JSON.stringify({ rotation, crop, detailed }));
+      body.append(
+        'options',
+        JSON.stringify({ rotation, crop, detailed: externalReader ? false : detailed }),
+      );
       body.append('requestId', op.id);
       const result = await api<Result>(
         '/goods/invoice-images/read',
@@ -405,22 +426,43 @@ export function InvoiceImageImport({
   return (
     <Dialog
       title="Importar factura desde imagen"
-      subtitle="Facturas y notas de entrega · Lectura por encabezados y columnas"
+      subtitle={
+        externalReader
+          ? 'Facturas y notas de entrega · Interpretación visual con Gemini'
+          : 'Facturas y notas de entrega · Lectura de documentos'
+      }
       onClose={onClose}
       busy={busy}
     >
       <div className="invoice-import">
-        <Feedback error={error} notice={notice} />
+        <Feedback error={error || reader.error} notice={notice} />
+        {reader.data && !reader.data.configured && (
+          <div className="alert warning">
+            Gemini aún no está conectado. El administrador debe configurar su cuenta en el servidor
+            para habilitar la lectura. Puedes continuar registrando compras manualmente.
+          </div>
+        )}
+        {reader.data?.configured && (
+          <div className="invoice-reader-label">
+            <span className="badge neutral">{reader.data.displayName}</span>
+            <span>
+              {externalReader
+                ? 'La fotografía se enviará a Google Gemini para su interpretación.'
+                : 'Lectura local configurada por el administrador.'}
+            </span>
+          </div>
+        )}
         {isReading && (
           <div className="ocr-progress">
             <div role="status" aria-live="polite">
               <strong>{cancelling ? 'Cancelando lectura…' : 'Leyendo documento…'}</strong>
               <span aria-live="off">
-                {elapsed} s · Límite de espera: {detailed ? 110 : 80} s
+                {elapsed} s · Límite de espera: {waitSeconds} s
               </span>
               <progress aria-label="Lectura de documento en curso" />
               <small>
-                Puedes detener la lectura y volver a intentarlo. Esta lectura no modifica el inventario.
+                Puedes detener la lectura y volver a intentarlo. Esta lectura no modifica el
+                inventario.
               </small>
             </div>
             <Button disabled={cancelling} onClick={() => stopReading('user')}>
@@ -450,19 +492,23 @@ export function InvoiceImageImport({
                   />
                 </label>
                 <p className="form-hint">
-                  Usa una foto nítida, recta y con todos los bordes visibles. La lectura se procesa
-                  en el servidor de la aplicación. No se envía a un proveedor externo de OCR.
+                  Usa una foto nítida con los bordes del documento visibles.{' '}
+                  {externalReader
+                    ? 'Gemini interpreta encabezados, tablas y notas aunque cambie el diseño. Debes revisar los resultados antes de guardar.'
+                    : 'El lector local procesa la foto en el servidor de la aplicación.'}
                 </p>
                 <div className="ocr-preparation">
-                  <label>
-                    <input
-                      type="checkbox"
-                      checked={detailed}
-                      onChange={(e) => setDetailed(e.target.checked)}
-                      disabled={busy}
-                    />
-                    Lectura detallada para fotos difíciles
-                  </label>
+                  {!externalReader && (
+                    <label>
+                      <input
+                        type="checkbox"
+                        checked={detailed}
+                        onChange={(e) => setDetailed(e.target.checked)}
+                        disabled={busy}
+                      />
+                      Lectura detallada para fotos difíciles
+                    </label>
+                  )}
                   <p>
                     Si aparece fondo alrededor del papel, arrastra sobre la vista previa para
                     seleccionar solo el documento.
@@ -492,7 +538,7 @@ export function InvoiceImageImport({
                   variant="primary"
                   icon="search"
                   onClick={() => void read()}
-                  disabled={busy || !file}
+                  disabled={busy || !file || !reader.data?.configured || reader.loading}
                 >
                   {busy ? 'Leyendo imagen…' : 'Leer imagen y preparar factura'}
                 </Button>
@@ -578,7 +624,9 @@ export function InvoiceImageImport({
                 >
                   {result?.sourceKind === 'example'
                     ? 'Transcripción de ejemplo'
-                    : `OCR · Confianza ${result?.confidence ?? '—'} %`}
+                    : result?.engine?.startsWith('gemini:')
+                      ? 'Gemini · Revisión requerida'
+                      : `OCR · Confianza ${result?.confidence ?? '—'} %`}
                 </span>
                 <span>Revisa todos los campos antes de crear la factura</span>
               </div>
@@ -664,12 +712,14 @@ export function InvoiceImageImport({
                   Moneda de factura
                   <select
                     aria-label="Moneda de factura"
+                    required
                     value={header.currency}
                     onChange={(e) => {
                       field('currency', e.target.value as Header['currency']);
                       field('exchangeRate', e.target.value === 'VES' ? '1' : '');
                     }}
                   >
+                    <option value="">Revisar moneda</option>
                     <option value="VES">Bolívares</option>
                     <option value="USD">USD</option>
                   </select>

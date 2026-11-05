@@ -20,11 +20,11 @@ Backend NestJS/TypeScript, PostgreSQL 17 con RLS e interfaz React. Node.js 24 re
 - Facturas de compra con proveedores, control de duplicados, descuentos, IVA y recepción de mercancía.
 - Valoración por costo promedio conocido, sin inventar costos históricos ausentes.
 - Márgenes individuales después de guardar una compra, con descuento neto, IVA separado y actualización de precios al recibir.
-- Importación de facturas y notas de entrega con OCR español, reconocimiento de columnas, recorte/giro, cancelación y tiempo límite completo antes de recibir stock.
+- Importación de facturas y notas de entrega con Gemini con visión, salida estructurada, recorte/giro, cancelación y revisión antes de recibir stock (requiere clave; motor local opcional).
 - Catálogo de los 18 artículos del ejemplo NICO PHARMA, con precios de venta pendientes.
 
 Consulta [facturas desde imágenes](docs/invoice-images.md) para el flujo, los límites y la
-diferencia de Bs 3.545,00 detectada en la factura de ejemplo.
+configuración privada de `GEMINI_API_KEY`, además de la diferencia de Bs 3.545,00 detectada en la factura de ejemplo.
 
 El flujo y los límites de las nuevas opciones están documentados en
 [ingreso y salida de mercancía](docs/goods-documents.md). El usuario autorizó publicar y

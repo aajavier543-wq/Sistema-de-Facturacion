@@ -151,13 +151,14 @@ test('bootstrap no concede permisos sobre una identidad preexistente diferente',
 });
 test('el proceso HTTP no hereda credenciales de migración, bootstrap ni API de Render', () => {
   const env = runtimeEnvironment(
-    { ...config, RENDER_API_KEY: 'test-only', PORT: '1234' },
+    { ...config, RENDER_API_KEY: 'test-only', GEMINI_API_KEY: 'test-gemini-only', PORT: '1234' },
     'postgresql://erp_app:example@localhost/test',
   );
   assert.equal(env.MIGRATION_DATABASE_URL, undefined);
   assert.equal(env.APP_DB_PASSWORD, undefined);
   assert.equal(env.BOOTSTRAP_PASSWORD, undefined);
   assert.equal(env.RENDER_API_KEY, undefined);
+  assert.equal(env.GEMINI_API_KEY, 'test-gemini-only');
   assert.equal(env.PORT, '1234');
   assert.ok(new URL(env.DATABASE_URL!).username === 'erp_app');
 });

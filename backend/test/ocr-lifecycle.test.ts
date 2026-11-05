@@ -8,6 +8,9 @@ import { InvoiceOcr } from '../src/invoice-ocr';
 import type { Principal } from '../src/database';
 class Harness extends InvoiceOcr {
   children: ChildProcess[] = [];
+  protected override readerMode() {
+    return 'local';
+  }
   constructor(private modes: string[]) {
     super();
   }

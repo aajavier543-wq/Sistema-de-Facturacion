@@ -1,40 +1,66 @@
 # Facturas desde imágenes y artículos del ejemplo
 
 En **Facturas de compra → Importar imagen de factura**, un administrador puede subir
-una fotografía JPEG, PNG o WebP (hasta 8 MB y 12 megapíxeles). El servidor valida los bytes,
-normaliza la imagen y ejecuta Tesseract en español. No utiliza un servicio OCR externo
-ni necesita una clave de IA. Solo se procesa una imagen a la vez por proceso; si hay otra
-lectura devuelve 429. El plazo abarca toda la operación, incluida la inicialización: 60 segundos en modo normal y
-90 en lectura detallada. El procesamiento se ejecuta en un proceso desechable separado de la API.
-Si el motor no arranca, se atasca o falla, el supervisor termina ese proceso y libera el lector.
-El resultado no espera un cierre interno del motor que pueda quedar pendiente.
+una fotografía JPEG, PNG o WebP (hasta 8 MB y 12 megapíxeles). El lector predeterminado
+es **Gemini con visión**: interpreta la página completa y devuelve datos estructurados,
+sin depender de una plantilla fija por proveedor. Requiere conexión y una clave de Google.
+La interpretación puede fallar u omitir campos; siempre se revisa antes de guardar.
 
-El lector reconstruye columnas por encabezados y posición de las palabras, con sinónimos
-como Cant/Cantidad, Descripción/Artículo y Costo/Precio unitario. Admite columnas en distinto
-orden y usa como alternativa los renglones de texto. La extracción no se selecciona por el
-nombre del proveedor ni por una plantilla fija. Cada intento conserva una lectura coherente;
-no se mezclan cantidades y costos de intentos diferentes.
+## Configurar Gemini
 
-El motor corrige inclinación, amplía el texto y reintenta con segmentación dispersa y
-compensación de iluminación si la lectura inicial queda incompleta. **Lectura detallada**
-fuerza las tres pasadas. Antes de leer puedes **Girar 90°** o arrastrar sobre la vista previa
-para seleccionar el papel y excluir pantalla, mesa o bordes. El recorte se calcula después
-del giro; el archivo subido no se modifica y su hash sigue identificando el original.
+En Google AI Studio, crea una clave desde https://aistudio.google.com/api-keys.
+En Render → **nexo-facturacion-demo → Environment**, configura de forma privada:
 
-Durante la lectura se muestra el tiempo transcurrido y **Cancelar lectura**. La cancelación
-aborta la petición y solicita al servidor detener exactamente esa operación. Empresa, usuario
-e identificador deben coincidir; no se permite cancelar lecturas de otros usuarios. Cerrar la
-conexión o apagar la aplicación también cancela la operación. El navegador tiene su propio
-límite de espera de 80/110 segundos para cubrir carga y conexión, y conserva la imagen para
-reintentar sin volver a seleccionarla. No hay reintentos automáticos indefinidos.
+```text
+INVOICE_READER_PROVIDER=gemini
+GEMINI_MODEL=gemini-flash-latest
+GEMINI_API_KEY=<clave privada del proyecto>
+```
 
-Se admite un proceso OCR activo por instancia. Otra lectura recibe 429 con `Retry-After: 2`,
-sin iniciar otro motor. La ocupación se libera cuando termina o se recoge el proceso, con
-limpieza acotada; un temporizador antiguo no puede liberar una operación nueva. Los errores
-del motor se comunican con códigos y mensajes estáticos, sin texto de documentos ni stacks.
-El hijo no hereda credenciales de base de datos, bootstrap o Render. El modelo español se
-lee del recurso local verificado en cada lectura; se desactiva la caché modificable para que
-una interrupción durante el arranque no deje un modelo parcial que rompa lecturas posteriores.
+`gemini-flash-latest` es el alias documentado por el [SDK oficial de Google](https://github.com/googleapis/js-genai).
+Puede cambiar el modelo al que apunta; `GEMINI_MODEL` permite seleccionar otro modelo
+Gemini compatible con imágenes y salida estructurada disponible en la cuenta.
+Guardar y desplegar los cambios de entorno es necesario. En un Blueprint existente,
+una entrada nueva `sync: false` no rellena la clave: debe añadirse en Environment.
+
+El cupo gratuito depende del proyecto, región, modelo y límites vigentes de Google.
+Esta integración no activa facturación ni cambia planes. Una clave vinculada a un proyecto
+con facturación puede generar consumo facturable según su configuración; revisa ese proyecto
+si quieres usar exclusivamente su cupo gratuito. Al agotarse la cuota se muestra el error,
+sin reintentos automáticos ni cambio silencioso a otro proveedor.
+
+La clave permanece en el servidor; nunca se envía al navegador ni debe guardarse como variable
+`VITE_*`. La pantalla avisa que la fotografía se enviará a Google. El servidor envía solo
+la imagen preparada y las instrucciones de extracción, sin credenciales de aplicación,
+sesiones, datos de otras facturas ni herramientas ejecutables. Revisa las condiciones de uso
+y tratamiento de datos del proveedor para el proyecto que elijas.
+
+`GET /api/goods/invoice-images/status` requiere administrador y comunica proveedor,
+modelo y presencia de configuración; no prueba la validez de la clave ni consume cuota.
+Sin clave, se muestra el aviso de configuración y se desactiva el botón de lectura.
+El resto de las compras manuales sigue disponible.
+
+## Lectura, límites y revisión
+
+El servidor valida los bytes y dimensiones, aplica giro/recorte y prepara un JPEG de hasta
+2400 × 3200 píxeles, sin ampliar el original. La petición usa el endpoint HTTPS fijo de
+Google, con la clave en un encabezado, sin redirecciones ni herramientas. La salida JSON
+se valida con un esquema estricto; las instrucciones dentro de la imagen se tratan como datos.
+La API descarta respuestas truncadas, vacías o inválidas y limita su tamaño a 1 MiB.
+Los errores del proveedor se comunican mediante códigos y mensajes estáticos, sin imprimir
+claves, fotografías, respuestas completas ni texto de documentos en los registros.
+
+Cada instancia admite dos solicitudes de Gemini simultáneas, con un plazo completo de
+90 segundos incluyendo preparación y recepción. Este límite por instancia no sustituye
+la cuota global del proyecto de Google. Durante la lectura se muestra el tiempo transcurrido
+y **Cancelar lectura**. Cancelar, cerrar la conexión o apagar el servidor aborta la petición
+y libera el registro de la operación; no se espera indefinidamente al proveedor.
+Empresa, usuario e identificador deben coincidir para cancelar. El navegador limita su espera
+a 110 segundos y conserva la imagen para reintentar sin volver a seleccionarla.
+
+Antes de leer puedes **Girar 90°** o arrastrar sobre la vista previa para seleccionar el papel
+y excluir pantalla, mesa o bordes. El recorte se calcula después del giro; el hash identifica
+el archivo original. La fotografía pequeña o borrosa no recupera detalle por usar visión.
 
 La cancelación no guarda artículos ni facturas y no mueve inventario. La ventana puede
 cerrarse tras cancelar para usar la entrada manual existente.
@@ -42,7 +68,7 @@ cerrarse tras cancelar para usar la entrada manual existente.
 La pantalla muestra la fotografía, proveedor, RIF, tipo y número de documento, control, fecha, cantidades,
 costos, descuentos, IVA y total para revisión. Los campos que no se reconocen quedan
 pendientes: el OCR puede omitir renglones, confundir caracteres o fallar con fotos torcidas.
-La confianza mostrada es orientativa; no garantiza exactitud ni determina tratamiento fiscal.
+Gemini muestra **Revisión requerida**, sin inventar un porcentaje de confianza. La lectura no determina tratamiento fiscal.
 Para esta primera versión, los importes de cada renglón se calculan como cantidad × costo,
 menos descuento, más IVA. Otros recargos/retenciones no se interpretan automáticamente.
 El total calculado debe coincidir con el declarado y el usuario debe confirmar su revisión.
@@ -135,7 +161,14 @@ npm run seed:example
 
 Ese helper rechaza servidores fuera de localhost y no imprime credenciales.
 
-## Modelo OCR y despliegue
+## Motor local opcional y pruebas
+
+El motor anterior permanece disponible solo con `INVOICE_READER_PROVIDER=local`.
+No es una alternativa automática ante errores de Gemini. Usa Tesseract en español,
+reconstruye columnas por encabezados y admite **Lectura detallada**. Procesa una imagen
+por instancia en un proceso separado y desechable, con plazo de 60/90 segundos y cancelación.
+El hijo no hereda claves de Gemini, base de datos, bootstrap ni Render. No envía fotos a Google.
+
 
 El modelo español de `tesseract-ocr/tessdata_fast`, bajo Apache-2.0, se incluye comprimido en
 `resources/ocr`. `manifest.json` fija la revisión y hashes; el build de Render verifica su
@@ -148,3 +181,9 @@ columnas reordenadas, cuatro decimales, miles, giro y recorte, además del recor
 en Chromium y las transacciones en PostgreSQL. Las imágenes de prueba se generan desde
 una transcripción de campos visibles: no son el archivo original de la fotografía del chat. Esto no certifica exactitud sobre todas las fotos
 ni reemplaza una revisión de los datos del proveedor.
+
+La integración Gemini se verifica con respuestas simuladas: esquema, claves ausentes,
+errores de acceso/cuota/modelo, cancelación, plazo, concurrencia, importes netos/brutos y
+flujo de navegador hasta el borrador y sus márgenes. Estas pruebas no envían fotografías a
+Google. Para comprobar la precisión sobre las fotografías originales se necesita configurar
+una clave válida y ejecutar una lectura real en el servicio desplegado.

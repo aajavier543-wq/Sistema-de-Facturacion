@@ -1,3 +1,4 @@
+process.env.INVOICE_READER_PROVIDER = 'local';
 import 'reflect-metadata';
 import 'dotenv/config';
 import { before, after, test } from 'node:test';
@@ -13,6 +14,8 @@ import { hashPassword } from '../src/security';
 import { invoiceExample } from '../src/invoice-example';
 import { invoiceImage, deliveryImage } from './invoice-fixture';
 import { InvoiceOcr } from '../src/invoice-ocr';
+import { geminiDelivery } from './gemini-fixture';
+import { normalizeGeminiDocument } from '../src/gemini-document';
 
 const dbName = 'goods_test_' + randomBytes(6).toString('hex');
 const tenant = randomUUID(),
@@ -1720,13 +1723,11 @@ if (process.env.RUN_BROWSER === '1')
       await page.getByRole('button', { name: 'Facturas de compra', exact: true }).click();
       await page.getByRole('button', { name: 'Importar imagen de factura', exact: true }).click();
       const dialog = page.getByRole('dialog');
-      await dialog
-        .getByLabel('Imagen de factura')
-        .setInputFiles({
-          name: 'lectura-reintentable.png',
-          mimeType: 'image/png',
-          buffer: await invoiceImage(),
-        });
+      await dialog.getByLabel('Imagen de factura').setInputFiles({
+        name: 'lectura-reintentable.png',
+        mimeType: 'image/png',
+        buffer: await invoiceImage(),
+      });
       let pendingRoute: any;
       await page.route('**/api/goods/invoice-images/read', (route) => {
         pendingRoute = route;
@@ -1781,6 +1782,148 @@ if (process.env.RUN_BROWSER === '1')
         '144',
       );
       assert.deepEqual(errors, []);
+    } finally {
+      await browser.close();
+    }
+  });
+
+if (process.env.RUN_BROWSER === '1')
+  test('navegador: Gemini sin clave muestra conexión pendiente y no inicia una lectura local', async () => {
+    const previousProvider = process.env.INVOICE_READER_PROVIDER,
+      previousKey = process.env.GEMINI_API_KEY;
+    process.env.INVOICE_READER_PROVIDER = 'gemini';
+    delete process.env.GEMINI_API_KEY;
+    const browser = await chromium.launch({
+      executablePath: process.env.CHROMIUM_PATH ?? '/usr/bin/chromium',
+      headless: true,
+      args: ['--no-sandbox', '--disable-dev-shm-usage'],
+    });
+    try {
+      const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
+      await page.goto(base.replace(/\/api$/, ''));
+      await page.getByLabel('Correo electrónico').fill('goods-admin@example.test');
+      await page.getByLabel('Contraseña', { exact: true }).fill(password);
+      await page.getByRole('button', { name: 'Ingresar al sistema' }).click();
+      await page.getByRole('heading', { name: 'Resumen de operaciones' }).waitFor();
+      await page.getByRole('button', { name: 'Facturas de compra', exact: true }).click();
+      await page.getByRole('button', { name: 'Importar imagen de factura', exact: true }).click();
+      const dialog = page.getByRole('dialog');
+      await dialog.getByText(/Gemini aún no está conectado/).waitFor();
+      await dialog
+        .getByLabel('Imagen de factura')
+        .setInputFiles({
+          name: 'gemini-pendiente.png',
+          mimeType: 'image/png',
+          buffer: await invoiceImage(),
+        });
+      assert.equal(
+        await dialog.getByRole('button', { name: 'Leer imagen y preparar factura' }).isDisabled(),
+        true,
+      );
+      assert.equal((await request('/goods/invoice-images/status')).body.configured, false);
+      assert.equal(
+        (await request('/goods/invoice-images/status', undefined, 'GET', cashierToken)).status,
+        403,
+      );
+    } finally {
+      await browser.close();
+      if (previousProvider === undefined) delete process.env.INVOICE_READER_PROVIDER;
+      else process.env.INVOICE_READER_PROVIDER = previousProvider;
+      if (previousKey === undefined) delete process.env.GEMINI_API_KEY;
+      else process.env.GEMINI_API_KEY = previousKey;
+    }
+  });
+if (process.env.RUN_BROWSER === '1')
+  test('navegador: respuesta visual de Gemini se revisa e ingresa por el flujo existente de compra y márgenes', async () => {
+    const browser = await chromium.launch({
+      executablePath: process.env.CHROMIUM_PATH ?? '/usr/bin/chromium',
+      headless: true,
+      args: ['--no-sandbox', '--disable-dev-shm-usage'],
+    });
+    try {
+      const page = await browser.newPage({
+        viewport: { width: 1440, height: 1000 },
+        locale: 'es-VE',
+        timezoneId: 'America/Caracas',
+      });
+      const raw = geminiDelivery();
+      raw.documentNumber = 'GEMINI-UI-1197';
+      await page.route('**/api/goods/invoice-images/status', (route) =>
+        route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify({
+            provider: 'gemini',
+            displayName: 'Gemini con visión',
+            configured: true,
+            external: true,
+            waitSeconds: 90,
+          }),
+        }),
+      );
+      await page.route('**/api/goods/invoice-images/read', (route) =>
+        route.fulfill({
+          status: 201,
+          contentType: 'application/json',
+          body: JSON.stringify({
+            reading: normalizeGeminiDocument(raw),
+            rawText: raw.text,
+            confidence: null,
+            imageHash: '9'.repeat(64),
+            attempts: 1,
+            engine: 'gemini:gemini-flash-latest',
+          }),
+        }),
+      );
+      await page.goto(base.replace(/\/api$/, ''));
+      await page.getByLabel('Correo electrónico').fill('goods-admin@example.test');
+      await page.getByLabel('Contraseña', { exact: true }).fill(password);
+      await page.getByRole('button', { name: 'Ingresar al sistema' }).click();
+      await page.getByRole('heading', { name: 'Resumen de operaciones' }).waitFor();
+      await page.getByRole('button', { name: 'Facturas de compra', exact: true }).click();
+      await page.getByRole('button', { name: 'Importar imagen de factura', exact: true }).click();
+      const dialog = page.getByRole('dialog');
+      await dialog.getByText('Gemini con visión', { exact: true }).waitFor();
+      assert.equal(await dialog.getByLabel('Lectura detallada para fotos difíciles').count(), 0);
+      await dialog
+        .getByLabel('Imagen de factura')
+        .setInputFiles({
+          name: 'gemini-nota.png',
+          mimeType: 'image/png',
+          buffer: await deliveryImage(),
+        });
+      await dialog.getByRole('button', { name: 'Leer imagen y preparar factura' }).click();
+      await dialog.getByText('Gemini · Revisión requerida', { exact: true }).waitFor();
+      assert.equal(await dialog.getByLabel('Cantidad importada 1').inputValue(), '2000');
+      assert.equal(
+        await dialog.getByLabel('Tipo de documento leído').inputValue(),
+        'delivery_note',
+      );
+      await dialog.getByLabel('Tasa de conversión Bs/USD').fill('40');
+      await dialog.getByLabel('IVA para todos', { exact: true }).selectOption('0');
+      await dialog.getByRole('button', { name: 'Aplicar IVA a los renglones' }).click();
+      await dialog.getByRole('checkbox').check();
+      if (process.env.SCREENSHOT_DIR)
+        await page.screenshot({
+          path: process.env.SCREENSHOT_DIR + '/gemini-documento-revision.png',
+          fullPage: true,
+        });
+      await dialog.getByRole('button', { name: 'Crear artículos y nota en borrador' }).click();
+      await page.getByRole('heading', { name: 'Márgenes de ganancia', exact: true }).waitFor();
+      await page.getByLabel('Ganancia inicial para todos').fill('30');
+      await page.getByRole('button', { name: 'Aplicar a todos', exact: true }).click();
+      await page.getByRole('button', { name: 'Guardar márgenes', exact: true }).click();
+      await page
+        .getByRole('heading', { name: 'Márgenes de ganancia', exact: true })
+        .waitFor({ state: 'hidden' });
+      const saved = await request(
+        '/goods/documents?branchId=' + branch + '&kind=purchase&search=GEMINI-UI-1197',
+      );
+      assert.equal(saved.body.total, 1);
+      const doc = await request('/goods/documents/' + saved.body.items[0].id);
+      assert.equal(doc.body.status, 'draft');
+      assert.equal(doc.body.lines.length, 6);
+      assert.equal(doc.body.purchase_document_type, 'delivery_note');
     } finally {
       await browser.close();
     }

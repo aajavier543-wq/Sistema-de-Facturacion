@@ -1,3 +1,4 @@
+process.env.INVOICE_READER_PROVIDER = 'local';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import Decimal from 'decimal.js';
@@ -72,7 +73,7 @@ test('OCR real con modelo español local y rechazo de archivos falsos', async ()
   const result = await ocr.recognize({ buffer, size: buffer.length, mimetype: 'image/png' });
   assert.match(result.rawText, /ACETAMINOF[EÉ]N/i);
   assert.equal(result.imageHash.length, 64);
-  assert.ok(result.confidence > 30);
+  assert.ok(result.confidence !== null && result.confidence > 30);
   assert.ok(result.reading.lines.length > 0, result.rawText);
   assert.equal(result.reading.invoiceNumber, '144');
 });

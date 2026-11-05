@@ -5,11 +5,12 @@ import { resolve } from 'node:path';
 import type { Principal } from './database';
 import type { InvoiceReading } from './invoice-parser';
 import type { OcrOptions } from './ocr-options';
+import { GeminiInvoiceReader } from './gemini-invoice-reader';
 export { ocrOptionsSchema, type OcrOptions } from './ocr-options';
 export type OcrResult = {
   reading: InvoiceReading;
   rawText: string;
-  confidence: number;
+  confidence: number | null;
   imageHash: string;
   attempts: number;
   engine: string;
@@ -40,6 +41,28 @@ const failed = () =>
 @Injectable()
 export class InvoiceOcr implements OnModuleDestroy {
   private active: ActiveTask | null = null;
+  private readonly gemini = new GeminiInvoiceReader();
+  protected readerMode() {
+    return process.env.INVOICE_READER_PROVIDER ?? 'gemini';
+  }
+  status() {
+    if (this.readerMode() === 'local')
+      return {
+        provider: 'local',
+        displayName: 'Lector local',
+        configured: true,
+        external: false,
+        waitSeconds: 60,
+      };
+    if (this.readerMode() === 'gemini') return this.gemini.status();
+    return {
+      provider: 'invalid',
+      displayName: 'Lector sin configurar',
+      configured: false,
+      external: false,
+      waitSeconds: 60,
+    };
+  }
   protected deadlineMs(detailed: boolean): number {
     return detailed ? 90_000 : 60_000;
   }
@@ -73,6 +96,15 @@ export class InvoiceOcr implements OnModuleDestroy {
         b.toString('ascii', 8, 12) === 'WEBP';
     if (!jpeg && !png && !webp)
       throw new BadRequestException('Solo se admiten imágenes JPEG, PNG o WebP reales');
+    if (this.readerMode() === 'gemini') return this.gemini.recognize(file, options, context);
+    if (this.readerMode() !== 'local')
+      throw new HttpException(
+        {
+          code: 'READER_NOT_CONFIGURED',
+          message: 'Selecciona un proveedor válido en INVOICE_READER_PROVIDER.',
+        },
+        503,
+      );
     if (context.signal?.aborted) throw cancelled();
     if (this.active)
       throw new HttpException(
@@ -185,6 +217,8 @@ export class InvoiceOcr implements OnModuleDestroy {
     });
   }
   async cancel(principal: Principal, requestId: string) {
+    const external = await this.gemini.cancel(principal, requestId);
+    if (external.cancelled) return external;
     const task = this.active;
     if (
       !task ||
@@ -198,6 +232,7 @@ export class InvoiceOcr implements OnModuleDestroy {
     return { cancelled: true };
   }
   async onModuleDestroy() {
+    await this.gemini.shutdown();
     const task = this.active;
     if (task) {
       task.stop(cancelled());

@@ -1,3 +1,4 @@
+process.env.INVOICE_READER_PROVIDER = 'local';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import Decimal from 'decimal.js';

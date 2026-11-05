@@ -11,7 +11,7 @@ export type InvoiceReading = {
   documentDate: string | null;
   dueDate: string | null;
   paymentTerms: 'cash' | 'credit';
-  currency: 'VES' | 'USD';
+  currency: 'VES' | 'USD' | 'unknown';
   exchangeRate: string | null;
   declaredTotal: string | null;
   declaredQuantity: string | null;

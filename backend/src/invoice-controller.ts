@@ -31,6 +31,10 @@ export class InvoiceImageController {
     private readonly ocr: InvoiceOcr,
     private readonly importer: InvoiceImporter,
   ) {}
+  @Get('status') status(@Req() req: AuthRequest) {
+    requireAdmin(req.principal);
+    return this.ocr.status();
+  }
   @Post('read')
   @UseInterceptors(
     FileInterceptor('image', { limits: { fileSize: 8 * 1024 * 1024, files: 1, fields: 2 } }),
@@ -67,8 +71,10 @@ export class InvoiceImageController {
         signal: controller.signal,
       });
     } catch (error) {
-      if (error instanceof HttpException && error.getStatus() === 429)
-        res.setHeader('Retry-After', '2');
+      if (error instanceof HttpException && error.getStatus() === 429) {
+        const code = (error.getResponse() as { code?: string }).code;
+        if (code === 'OCR_BUSY' || code === 'GEMINI_CAPACITY') res.setHeader('Retry-After', '2');
+      }
       throw error;
     } finally {
       res.removeListener('close', disconnect);
