@@ -86,6 +86,7 @@ export function Inventory({
           'Código de barras',
           'Existencia',
           'Precio USD sin IVA',
+          'Estado del precio',
           'Impuesto',
         ],
         (rows as Product[]).map((p) => [
@@ -93,7 +94,8 @@ export function Inventory({
           p.name,
           p.barcode,
           p.quantity ?? '0',
-          p.price_usd,
+          p.price_pending ? '' : p.price_usd,
+          p.price_pending ? 'Pendiente' : 'Definido',
           taxLabels[p.tax_category],
         ]),
       );
@@ -155,7 +157,11 @@ export function Inventory({
                 >
                   Ajustar existencia
                 </Button>
-                <Button icon="file" disabled={!product} onClick={() => onQuote(product!)}>
+                <Button
+                  icon="file"
+                  disabled={!product || !!product.price_pending}
+                  onClick={() => onQuote(product!)}
+                >
                   Cotizar
                 </Button>
               </>
@@ -240,7 +246,7 @@ export function Inventory({
                       <td className="code">{p.sku}</td>
                       <td>
                         <strong>{p.name}</strong>
-                        {Number(rate) > 0 && (
+                        {!p.price_pending && Number(rate) > 0 && (
                           <small>
                             Referencia: Bs {money(Number(p.price_usd) * Number(rate))} sin IVA
                           </small>
@@ -249,11 +255,14 @@ export function Inventory({
                       <td className="muted">{p.barcode || '—'}</td>
                       <td className="right number">{quantity(p.quantity ?? '0')}</td>
                       <td className="right number">
-                        $ {money(p.price_usd)}
-                        <small>Sin IVA</small>
+                        {p.price_pending ? 'Por definir' : '$ ' + money(p.price_usd)}
+                        <small>{p.price_pending ? 'Precio de venta pendiente' : 'Sin IVA'}</small>
                       </td>
                       <td>
-                        <span className="badge neutral">{taxLabels[p.tax_category]}</span>
+                        <span className="badge neutral">
+                          {taxLabels[p.tax_category]}
+                          {p.price_pending ? ' · Revisar' : ''}
+                        </span>
                       </td>
                       <td>
                         <span className={'badge ' + (Number(p.quantity) > 0 ? 'green' : 'amber')}>
@@ -380,6 +389,12 @@ function ProductEditor({
         <fieldset disabled={busy}>
           <div className="form-content">
             <Feedback error={error} />
+            {product?.price_pending && (
+              <div className="alert warning">
+                Artículo importado. Indica el precio de venta en USD y revisa su IVA para habilitar
+                las cotizaciones. Los costos de compra no se usan como precio de venta.
+              </div>
+            )}
             <div className="form-section-label">IDENTIFICACIÓN</div>
             <div className="form-grid">
               <label>

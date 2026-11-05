@@ -7,16 +7,17 @@ export function makeApi(session: Session | null, tenant: string, onUnauthorized:
     body?: unknown,
     signal?: AbortSignal,
   ): Promise<T> => {
+    const multipart = body instanceof FormData;
     const response = await fetch('/api' + path, {
       method,
       signal,
       headers: {
-        'content-type': 'application/json',
+        ...(!multipart ? { 'content-type': 'application/json' } : {}),
         ...(session
           ? { authorization: 'Bearer ' + session.accessToken, 'x-tenant-id': tenant }
           : {}),
       },
-      body: body === undefined ? undefined : JSON.stringify(body),
+      body: body === undefined ? undefined : multipart ? body : JSON.stringify(body),
     });
     const data = await response.json().catch(() => null);
     if (signal?.aborted) throw new DOMException('Request aborted', 'AbortError');

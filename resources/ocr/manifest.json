@@ -1,0 +1,16 @@
+{
+  "source": "tesseract-ocr/tessdata_fast",
+  "commit": "87416418657359cb625c412a48b6e1d6d41c29bd",
+  "files": {
+    "spa.traineddata.gz": {
+      "sha256": "512d54fa722c1a0940bd20086d7ec487747e7f94771437d50405d6d8753dcc06",
+      "git_blob": "72e901f13ca52cfe34cf239a368b9ed3c0ddaf26",
+      "size": 1127456
+    },
+    "LICENSE": {
+      "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+      "git_blob": "d645695673349e3947e8e5ae42332d0ac3164cd7",
+      "size": 11358
+    }
+  }
+}

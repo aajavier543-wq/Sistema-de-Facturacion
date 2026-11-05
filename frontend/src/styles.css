@@ -2211,3 +2211,216 @@ td small {
     font-size: 22px;
   }
 }
+
+/* Purchase invoice image review */
+.dialog:has(.invoice-import) {
+  width: min(1240px, calc(100vw - 32px));
+  max-width: calc(100vw - 32px);
+}
+.invoice-import {
+  padding: 24px;
+}
+.invoice-import fieldset {
+  border: 0;
+  padding: 0;
+  min-width: 0;
+  margin: 0;
+}
+.invoice-import label {
+  display: grid;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.invoice-import input,
+.invoice-import select {
+  width: 100%;
+  min-width: 0;
+}
+.invoice-upload-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 24px;
+  align-items: center;
+}
+.invoice-drop {
+  border: 1px dashed #aab4c5;
+  border-radius: 12px;
+  padding: 28px;
+  background: #f7f9fc;
+}
+.invoice-drop strong {
+  color: #23364a;
+  font-size: 15px;
+}
+.invoice-preview {
+  background: #eff2f6;
+  border: 1px solid #dce2e9;
+  border-radius: 10px;
+  padding: 12px;
+  display: grid;
+  place-items: center;
+  min-height: 200px;
+  overflow: hidden;
+}
+.invoice-preview img {
+  display: block;
+  width: 100%;
+  max-height: 680px;
+  object-fit: contain;
+}
+.example-actions {
+  border-top: 1px solid #dce2e9;
+  margin-top: 24px;
+  padding-top: 20px;
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.example-actions > div {
+  flex: 1;
+  min-width: 220px;
+}
+.example-actions p {
+  font-size: 12px;
+  color: #64748b;
+}
+.invoice-reading-status {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 16px;
+  font-size: 12px;
+}
+.invoice-review-header {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 14px;
+  margin: 18px 0;
+}
+.invoice-review-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 18px;
+}
+.invoice-review-layout:has(.invoice-preview) {
+  grid-template-columns: minmax(0, 2fr) minmax(200px, 1fr);
+}
+.invoice-review-lines {
+  min-width: 730px;
+}
+.invoice-review-lines th {
+  white-space: nowrap;
+}
+.invoice-review-lines td:first-child {
+  min-width: 260px;
+}
+.invoice-review-lines td:nth-child(2),
+.invoice-review-lines td:nth-child(3) {
+  min-width: 105px;
+}
+.invoice-review-lines td:nth-child(4),
+.invoice-review-lines td:nth-child(5) {
+  min-width: 85px;
+}
+.invoice-review-lines input {
+  padding: 7px 8px;
+  font-size: 12px;
+}
+.invoice-review-lines td:first-child input + input {
+  margin-top: 6px;
+  font-size: 11px;
+}
+.invoice-reconciliation {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  padding: 14px;
+  border-radius: 8px;
+  margin: 16px 0;
+  font-size: 13px;
+}
+.invoice-reconciliation.unmatched,
+.alert.warning {
+  background: #fff7e4;
+  color: #8a560b;
+}
+.invoice-reconciliation.matched {
+  background: #e9f7ef;
+  color: #146840;
+}
+.ocr-text {
+  font-size: 12px;
+  margin: 14px 0;
+}
+.ocr-text pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 240px;
+  overflow: auto;
+  background: #f7f9fc;
+  padding: 12px;
+}
+.invoice-import .review-check {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: #334155;
+}
+.invoice-import .review-check input {
+  width: auto;
+}
+.invoice-import .dialog-footer {
+  padding: 18px 0 0;
+  margin-top: 16px;
+}
+@media (max-width: 800px) {
+  .invoice-upload-grid,
+  .invoice-review-layout:has(.invoice-preview) {
+    grid-template-columns: 1fr;
+  }
+  .invoice-review-header {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .invoice-import {
+    padding: 14px;
+  }
+  .invoice-preview img {
+    max-height: 350px;
+  }
+}
+@media (max-width: 450px) {
+  .invoice-review-header {
+    grid-template-columns: 1fr;
+  }
+  .invoice-reading-status {
+    flex-wrap: wrap;
+  }
+}
+.invoice-review-layout > div {
+  min-width: 0;
+}
+.invoice-import .dialog-footer {
+  flex-wrap: wrap;
+}
+.invoice-import .dialog-footer .btn {
+  white-space: normal;
+}
+.goods-workspace .heading-actions {
+  flex-wrap: wrap;
+  max-width: 100%;
+  flex-shrink: 1;
+}
+@media (max-width: 600px) {
+  .goods-workspace .heading-actions {
+    width: 100%;
+  }
+  .goods-workspace .heading-actions .btn {
+    flex: 1 1 200px;
+  }
+}
+.invoice-review-lines td:nth-child(5) {
+  min-width: 110px;
+}

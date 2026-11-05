@@ -115,7 +115,7 @@ after(async () => {
   }
   if (owner) await owner.end();
   if (admin) {
-    await admin.query(`DROP DATABASE IF EXISTS ${name} WITH (FORCE)`);
+    await admin.query(`DROP DATABASE IF EXISTS ${name}`);
     await admin.end();
   }
 });

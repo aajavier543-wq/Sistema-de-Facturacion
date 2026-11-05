@@ -116,7 +116,7 @@ export class BusinessController {
       async (c) =>
         (
           await c.query(
-            `SELECT id,sku,barcode,name,price_usd,tax_category,version
+            `SELECT id,sku,barcode,name,price_usd,tax_category,version,price_pending
       FROM products WHERE active AND (strpos(lower(name),lower($1))>0 OR sku=$1 OR barcode=$1)
       ORDER BY name,id LIMIT $2 OFFSET $3`,
             [q.search, q.limit, q.offset],
@@ -141,7 +141,7 @@ export class BusinessController {
     return this.db.transaction(req.principal, async (c) => {
       const result = await c.query(
         `INSERT INTO products(tenant_id,sku,barcode,name,price_usd,tax_category)
-        VALUES($1,$2,$3,$4,$5,$6) RETURNING id,sku,barcode,name,price_usd,tax_category,version`,
+        VALUES($1,$2,$3,$4,$5,$6) RETURNING id,sku,barcode,name,price_usd,tax_category,version,price_pending`,
         [req.principal.tenantId, p.sku, p.barcode ?? null, p.name, p.priceUsd, p.taxCategory],
       );
       await c.query(
@@ -181,8 +181,9 @@ export class BusinessController {
           'El artículo fue modificado por otro usuario. Actualiza la consulta y vuelve a abrir la ficha.',
         );
       const updated = await c.query(
-        `UPDATE products SET name=$2,barcode=$3,price_usd=$4,tax_category=$5,version=version+1
-        WHERE id=$1 RETURNING id,sku,barcode,name,price_usd,tax_category,version`,
+        `UPDATE products SET name=$2,barcode=$3,price_usd=$4,tax_category=$5,version=version+1,
+        price_pending=price_pending AND $4::numeric=0
+        WHERE id=$1 RETURNING id,sku,barcode,name,price_usd,tax_category,version,price_pending`,
         [id, p.name, p.barcode, p.priceUsd, p.taxCategory],
       );
       await c.query(
@@ -235,7 +236,7 @@ export class BusinessController {
         q.search,
       ]);
       const rows = await c.query(
-        `SELECT p.id,p.sku,p.barcode,p.name,p.price_usd,p.tax_category,p.version,
+        `SELECT p.id,p.sku,p.barcode,p.name,p.price_usd,p.tax_category,p.version,p.price_pending,
         coalesce(s.quantity,0)::text AS quantity,
         ${req.principal.role === 'admin' ? 's.average_cost_base::text' : 'NULL::text'} AS average_cost_base FROM products p
         LEFT JOIN stock_balances s ON p.tenant_id=s.tenant_id AND p.id=s.product_id AND s.branch_id=$2
@@ -335,12 +336,16 @@ export class BusinessController {
     const lines: (QuoteLine & { productId: string; sku: string; name: string })[] =
       await this.db.transaction(req.principal, async (c) => {
         const { rows } = await c.query(
-          'SELECT id,sku,name,price_usd,tax_category FROM products WHERE id=ANY($1::uuid[]) AND active',
+          'SELECT id,sku,name,price_usd,tax_category,price_pending FROM products WHERE id=ANY($1::uuid[]) AND active',
           [data.lines.map((l) => l.productId)],
         );
         return data.lines.map((l) => {
           const p = rows.find((p) => p.id === l.productId);
           if (!p) throw new BadRequestException('Producto no disponible');
+          if (p.price_pending)
+            throw new BadRequestException(
+              'Revisa el precio de venta y el IVA de ' + p.name + ' en su ficha antes de cotizar.',
+            );
           return {
             productId: p.id,
             sku: p.sku,

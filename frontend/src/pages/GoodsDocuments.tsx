@@ -4,6 +4,7 @@ import { useResource } from '../api';
 import { Button, Dialog, Empty, Feedback, Icon, Pager } from '../components/ui';
 import { money, type Api, type PageResult, type Product } from '../types';
 import type { GoodsDocument, GoodsKind, Supplier } from '../goods-types';
+import { InvoiceImageImport } from './InvoiceImageImport';
 type Line = {
   key: string;
   productId: string;
@@ -113,6 +114,7 @@ export function GoodsDocuments({
   const [itemSearch, setItemSearch] = useState('');
   const [supplierSearch, setSupplierSearch] = useState('');
   const [supplierOpen, setSupplierOpen] = useState(false);
+  const [imageImportOpen, setImageImportOpen] = useState(false);
   const attempt = useRef<{ signature: string; key: string } | null>(null);
   const itemRef = useRef<HTMLInputElement>(null);
   const formRef = useRef<HTMLFormElement>(null);
@@ -407,16 +409,53 @@ export function GoodsDocuments({
               : 'Documenta entradas y salidas, con varios artículos en una misma operación.'}
           </p>
         </div>
-        <Button
-          icon="plus"
-          variant="primary"
-          onClick={() => newDocument()}
-          disabled={busy || !branch}
-        >
-          {purchase ? 'Nueva factura de compra' : 'Nuevo ajuste'}
-        </Button>
+        <div className="heading-actions">
+          {purchase && (
+            <Button
+              icon="file"
+              disabled={busy || !branch}
+              onClick={() => {
+                if (
+                  dirty &&
+                  !window.confirm(
+                    '¿Descartar los cambios sin guardar antes de importar otra factura?',
+                  )
+                )
+                  return;
+                setImageImportOpen(true);
+              }}
+            >
+              Importar imagen de factura
+            </Button>
+          )}
+          <Button
+            icon="plus"
+            variant="primary"
+            onClick={() => newDocument()}
+            disabled={busy || !branch}
+          >
+            {purchase ? 'Nueva factura de compra' : 'Nuevo ajuste'}
+          </Button>
+        </div>
       </div>
       <Feedback error={error || list.error} notice={notice} />
+      {imageImportOpen && (
+        <InvoiceImageImport
+          api={api}
+          branch={branch}
+          onClose={() => setImageImportOpen(false)}
+          onCatalogChanged={onChanged}
+          onImported={(d) => {
+            hydrate(d);
+            setImageImportOpen(false);
+            setError('');
+            setNotice(
+              `Factura importada en borrador. ${d.createdProducts} artículos nuevos y ${d.linkedProducts} vinculados. Revisa el documento antes de confirmar la recepción.`,
+            );
+            onChanged();
+          }}
+        />
+      )}
       <section className="panel">
         <div className="document-tabs" role="tablist" aria-label="Vista del documento">
           <button role="tab" aria-selected={view === 'list'} onClick={() => setView('list')}>

@@ -21,6 +21,8 @@ services:
           property: connectionString
       - key: APP_DATABASE_NAME
         value: nexo_facturacion
+      - key: SEED_NICOPHARMA_EXAMPLE
+        value: 'true'
       - key: APP_DB_PASSWORD
         generateValue: true
       - key: BOOTSTRAP_EMAIL

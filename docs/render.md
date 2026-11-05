@@ -35,7 +35,9 @@ El build usa `scripts/render-build.sh`. El arranque usa `backend/dist/scripts/st
    comprueba el acceso del rol restringido. No cambia contraseñas existentes.
 3. Crea empresa, sucursal y administrador si no existen. Los reinicios no duplican registros
    ni restablecen contraseñas. Cambiar una variable de bootstrap no modifica una cuenta existente.
-4. Inicia el proceso HTTP hijo con `DATABASE_URL` del rol restringido y elimina de su entorno
+4. Prepara el catálogo del ejemplo NICO PHARMA en la empresa del bootstrap, sin stock ni
+   precios de venta inventados (`SEED_NICOPHARMA_EXAMPLE=false` desactiva esta carga).
+5. Inicia el proceso HTTP hijo con `DATABASE_URL` del rol restringido y elimina de su entorno
    las credenciales del propietario, bootstrap y API de Render.
 
 La inicialización requiere que el propietario suministrado por Render pueda crear bases y roles.

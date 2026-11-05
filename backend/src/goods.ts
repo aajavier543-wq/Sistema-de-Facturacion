@@ -99,125 +99,136 @@ export class GoodsService {
     expectedVersion?: number,
   ) {
     requireAdmin(p);
+    return this.db.transaction(p, (c) =>
+      this.saveWithClient(c, p, data, createKey, id, expectedVersion),
+    );
+  }
+  async saveWithClient(
+    c: PoolClient,
+    p: Principal,
+    data: GoodsInput,
+    createKey: string | null,
+    id?: string,
+    expectedVersion?: number,
+  ) {
+    requireAdmin(p);
     const hash = createHash('sha256').update(JSON.stringify(data)).digest('hex');
-    return this.db.transaction(p, async (c) => {
-      let before: any = null;
-      if (id) {
-        before = (await c.query('SELECT * FROM inventory_documents WHERE id=$1 FOR UPDATE', [id]))
-          .rows[0];
-        if (!before) throw new NotFoundException('Documento no disponible');
-        if (before.status !== 'draft')
-          throw new ConflictException('Un documento confirmado no se puede modificar');
-        if (before.version !== expectedVersion)
-          throw new ConflictException(
-            'El documento fue modificado. Actualiza la consulta antes de guardar.',
-          );
-        if (before.branch_id !== data.branchId || before.kind !== data.kind)
-          throw new ConflictException('No se puede cambiar la sucursal o tipo del documento');
-      } else {
-        await c.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))', [
-          'goods:' + p.tenantId + ':' + createKey,
-        ]);
-        const existing = (
-          await c.query('SELECT id,create_hash FROM inventory_documents WHERE create_key=$1', [
-            createKey,
-          ])
-        ).rows[0];
-        if (existing) {
-          if (existing.create_hash !== hash)
-            throw new ConflictException('La clave de creación ya fue usada con otros datos');
-          return { ...(await this.read(c, existing.id)), replayed: true };
-        }
+    let before: any = null;
+    if (id) {
+      before = (await c.query('SELECT * FROM inventory_documents WHERE id=$1 FOR UPDATE', [id]))
+        .rows[0];
+      if (!before) throw new NotFoundException('Documento no disponible');
+      if (before.status !== 'draft')
+        throw new ConflictException('Un documento confirmado no se puede modificar');
+      if (before.version !== expectedVersion)
+        throw new ConflictException(
+          'El documento fue modificado. Actualiza la consulta antes de guardar.',
+        );
+      if (before.branch_id !== data.branchId || before.kind !== data.kind)
+        throw new ConflictException('No se puede cambiar la sucursal o tipo del documento');
+    } else {
+      await c.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))', [
+        'goods:' + p.tenantId + ':' + createKey,
+      ]);
+      const existing = (
+        await c.query('SELECT id,create_hash FROM inventory_documents WHERE create_key=$1', [
+          createKey,
+        ])
+      ).rows[0];
+      if (existing) {
+        if (existing.create_hash !== hash)
+          throw new ConflictException('La clave de creación ya fue usada con otros datos');
+        return { ...(await this.read(c, existing.id)), replayed: true };
       }
-      const { calculated, products } = await this.references(c, data);
-      const values = [
-        data.documentDate,
-        data.description,
-        data.currency,
-        data.exchangeRate,
-        data.supplierId,
-        data.invoiceNumber,
-        data.controlNumber,
-        data.paymentTerms,
-        data.dueDate,
-        calculated.subtotal,
-        calculated.discountTotal,
-        calculated.taxTotal,
-        calculated.total,
-      ];
-      let documentId = id;
-      if (id) {
-        await c.query(
-          `UPDATE inventory_documents SET document_date=$2,description=$3,currency=$4,exchange_rate=$5,
+    }
+    const { calculated, products } = await this.references(c, data);
+    const values = [
+      data.documentDate,
+      data.description,
+      data.currency,
+      data.exchangeRate,
+      data.supplierId,
+      data.invoiceNumber,
+      data.controlNumber,
+      data.paymentTerms,
+      data.dueDate,
+      calculated.subtotal,
+      calculated.discountTotal,
+      calculated.taxTotal,
+      calculated.total,
+    ];
+    let documentId = id;
+    if (id) {
+      await c.query(
+        `UPDATE inventory_documents SET document_date=$2,description=$3,currency=$4,exchange_rate=$5,
          supplier_id=$6,invoice_number=$7,control_number=$8,payment_terms=$9,due_date=$10,
          subtotal=$11,discount_total=$12,tax_total=$13,total=$14,version=version+1 WHERE id=$1`,
-          [id, ...values],
-        );
-        await c.query('DELETE FROM inventory_document_lines WHERE document_id=$1', [id]);
-      } else {
-        const counter = await c.query(
-          `INSERT INTO document_counters(tenant_id,kind,last_number) VALUES($1,$2,1)
+        [id, ...values],
+      );
+      await c.query('DELETE FROM inventory_document_lines WHERE document_id=$1', [id]);
+    } else {
+      const counter = await c.query(
+        `INSERT INTO document_counters(tenant_id,kind,last_number) VALUES($1,$2,1)
          ON CONFLICT(tenant_id,kind) DO UPDATE SET last_number=document_counters.last_number+1 RETURNING last_number`,
-          [p.tenantId, data.kind],
-        );
-        const doc = await c.query(
-          `INSERT INTO inventory_documents(tenant_id,branch_id,kind,number,document_date,
+        [p.tenantId, data.kind],
+      );
+      const doc = await c.query(
+        `INSERT INTO inventory_documents(tenant_id,branch_id,kind,number,document_date,
          description,currency,exchange_rate,supplier_id,invoice_number,control_number,payment_terms,due_date,
          subtotal,discount_total,tax_total,total,create_key,create_hash,created_by)
          VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20) RETURNING id`,
-          [
-            p.tenantId,
-            data.branchId,
-            data.kind,
-            counter.rows[0].last_number,
-            ...values,
-            createKey,
-            hash,
-            p.userId,
-          ],
-        );
-        documentId = doc.rows[0].id;
-      }
-      for (let i = 0; i < calculated.lines.length; i++) {
-        const l = calculated.lines[i]!;
-        const product = products.get(l.productId)!;
-        await c.query(
-          `INSERT INTO inventory_document_lines(tenant_id,document_id,branch_id,position,product_id,sku,name,
-         direction,quantity,unit_cost,discount_percent,tax_rate,gross,discount_amount,taxable_base,tax_amount,total)
-         VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)`,
-          [
-            p.tenantId,
-            documentId,
-            data.branchId,
-            i + 1,
-            l.productId,
-            product.sku,
-            product.name,
-            l.direction,
-            l.quantity,
-            l.unitCost,
-            l.discountPercent,
-            l.taxRate,
-            l.gross,
-            l.discountAmount,
-            l.taxableBase,
-            l.taxAmount,
-            l.total,
-          ],
-        );
-      }
-      await c.query(
-        `INSERT INTO audit_events(tenant_id,actor_id,action,entity_id,details) VALUES($1,$2,$3,$4,$5)`,
         [
           p.tenantId,
+          data.branchId,
+          data.kind,
+          counter.rows[0].last_number,
+          ...values,
+          createKey,
+          hash,
           p.userId,
-          id ? 'goods.draft.update' : 'goods.draft.create',
-          documentId,
-          JSON.stringify({ kind: data.kind, previousVersion: before?.version ?? null }),
         ],
       );
-      return { ...(await this.read(c, documentId!)), replayed: false };
-    });
+      documentId = doc.rows[0].id;
+    }
+    for (let i = 0; i < calculated.lines.length; i++) {
+      const l = calculated.lines[i]!;
+      const product = products.get(l.productId)!;
+      await c.query(
+        `INSERT INTO inventory_document_lines(tenant_id,document_id,branch_id,position,product_id,sku,name,
+         direction,quantity,unit_cost,discount_percent,tax_rate,gross,discount_amount,taxable_base,tax_amount,total)
+         VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)`,
+        [
+          p.tenantId,
+          documentId,
+          data.branchId,
+          i + 1,
+          l.productId,
+          product.sku,
+          product.name,
+          l.direction,
+          l.quantity,
+          l.unitCost,
+          l.discountPercent,
+          l.taxRate,
+          l.gross,
+          l.discountAmount,
+          l.taxableBase,
+          l.taxAmount,
+          l.total,
+        ],
+      );
+    }
+    await c.query(
+      `INSERT INTO audit_events(tenant_id,actor_id,action,entity_id,details) VALUES($1,$2,$3,$4,$5)`,
+      [
+        p.tenantId,
+        p.userId,
+        id ? 'goods.draft.update' : 'goods.draft.create',
+        documentId,
+        JSON.stringify({ kind: data.kind, previousVersion: before?.version ?? null }),
+      ],
+    );
+    return { ...(await this.read(c, documentId!)), replayed: false };
   }
   async confirm(p: Principal, id: string, expectedVersion: number) {
     requireAdmin(p);

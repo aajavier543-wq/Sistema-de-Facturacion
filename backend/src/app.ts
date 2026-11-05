@@ -7,6 +7,9 @@ import { AuthService, TenantGuard } from './auth';
 import { InventoryService } from './inventory';
 import { GoodsService } from './goods';
 import { GoodsController } from './goods-controller';
+import { InvoiceImageController } from './invoice-controller';
+import { InvoiceImporter } from './invoice-import';
+import { InvoiceOcr } from './invoice-ocr';
 import { AuthController, BusinessController, HealthController } from './controllers';
 
 @Catch()
@@ -21,7 +24,9 @@ class ApiErrors implements ExceptionFilter {
         message:
           (error as { constraint?: string }).constraint === 'purchase_invoice_unique'
             ? 'El proveedor ya tiene una factura registrada con ese número.'
-            : 'Registro duplicado',
+            : (error as { constraint?: string }).constraint === 'invoice_image_once'
+              ? 'Esta imagen ya fue importada en la empresa.'
+              : 'Registro duplicado',
       });
     if (code === '23503' || code === '23514')
       return response.status(400).json({ message: 'Referencia o valor inválido' });
@@ -36,13 +41,21 @@ class ApiErrors implements ExceptionFilter {
   }
 }
 @Module({
-  controllers: [HealthController, AuthController, BusinessController, GoodsController],
+  controllers: [
+    HealthController,
+    AuthController,
+    BusinessController,
+    GoodsController,
+    InvoiceImageController,
+  ],
   providers: [
     Database,
     AuthService,
     TenantGuard,
     InventoryService,
     GoodsService,
+    InvoiceImporter,
+    InvoiceOcr,
     { provide: APP_FILTER, useClass: ApiErrors },
   ],
 })

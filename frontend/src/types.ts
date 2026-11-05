@@ -12,6 +12,7 @@ export type Product = {
   price_usd: string;
   tax_category: 'general' | 'reduced' | 'exempt';
   version: number;
+  price_pending?: boolean;
   quantity?: string;
   average_cost_base?: string | null;
 };

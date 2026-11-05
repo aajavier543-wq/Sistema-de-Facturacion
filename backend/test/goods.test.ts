@@ -10,6 +10,8 @@ import { createApplication } from '../src/create-app';
 import { Database, Principal } from '../src/database';
 import { migrate } from '../scripts/migrate';
 import { hashPassword } from '../src/security';
+import { invoiceExample } from '../src/invoice-example';
+import { invoiceImage } from './invoice-fixture';
 
 const dbName = 'goods_test_' + randomBytes(6).toString('hex');
 const tenant = randomUUID(),
@@ -181,7 +183,7 @@ after(async () => {
   if (app) await app.close();
   if (owner) await owner.end();
   if (admin) {
-    await admin.query(`DROP DATABASE IF EXISTS ${dbName} WITH (FORCE)`);
+    await admin.query(`DROP DATABASE IF EXISTS ${dbName}`);
     await admin.end();
   }
 });
@@ -507,6 +509,243 @@ test('documentos, proveedores y renglones mantienen RLS y permisos de administra
   );
 });
 
+function reviewedInvoice(overrides: Record<string, unknown> = {}) {
+  return {
+    branchId: branch,
+    idempotencyKey: randomUUID(),
+    reviewed: true,
+    sourceKind: 'image',
+    imageHash: 'a'.repeat(64),
+    rawText: 'Factura de prueba',
+    supplierName: 'Proveedor Imagen',
+    supplierRif: 'J777777777',
+    invoiceNumber: 'OCR-001',
+    controlNumber: '00-OCR-001',
+    documentDate: '2026-09-27',
+    currency: 'VES',
+    exchangeRate: '1',
+    declaredTotal: '20',
+    paymentTerms: 'cash',
+    dueDate: null,
+    lines: [
+      {
+        name: 'MEDICAMENTO OCR 500MG X 10',
+        quantity: '2',
+        unitCost: '10',
+        discountPercent: '0',
+        taxRate: '0',
+      },
+    ],
+    ...overrides,
+  };
+}
+test('catálogo de los 18 artículos: carga concurrente idempotente, sin stock ni precio inventado', async () => {
+  const loaded = await Promise.all([
+    request('/goods/invoice-images/example/catalog', {}),
+    request('/goods/invoice-images/example/catalog', {}),
+  ]);
+  assert.ok(
+    loaded.every((r) => r.status === 201),
+    JSON.stringify(loaded),
+  );
+  assert.equal(
+    loaded.reduce((sum, r) => sum + r.body.created, 0),
+    18,
+  );
+  const products = await db.transaction(principal, (c) =>
+    c.query("SELECT * FROM products WHERE catalog_source_key LIKE 'nicopharma-example-%'"),
+  );
+  assert.equal(products.rowCount, 18);
+  assert.ok(products.rows.every((p) => p.price_pending && Number(p.price_usd) === 0 && !p.barcode));
+  assert.equal(Number((await stock(products.rows[0].id)).quantity), 0);
+  assert.equal(
+    (await request('/goods/invoice-images/example/catalog', {}, undefined, cashierToken)).status,
+    403,
+  );
+  const foreign = await request(
+    '/goods/invoice-images/example/catalog',
+    {},
+    undefined,
+    foreignToken,
+    foreignTenant,
+  );
+  assert.equal(foreign.body.created, 18);
+  const renamed = products.rows[0];
+  await owner.query("UPDATE products SET name='Nombre revisado',active=false WHERE id=$1", [
+    renamed.id,
+  ]);
+  const repeat = await request('/goods/invoice-images/example/catalog', {});
+  assert.equal(repeat.body.created, 0);
+});
+test('importar crea proveedor y factura atómicamente, conserva precios y recibe solo al confirmar', async () => {
+  const input = reviewedInvoice();
+  const responses = await Promise.all([
+    request('/goods/invoice-images/apply', input),
+    request('/goods/invoice-images/apply', input),
+  ]);
+  assert.ok(
+    responses.every((r) => r.status === 201),
+    JSON.stringify(responses),
+  );
+  assert.equal(responses[0].body.id, responses[1].body.id);
+  const d = responses[0].body;
+  assert.equal(d.status, 'draft');
+  assert.equal(d.source_kind, 'image');
+  const id = d.lines[0].product_id;
+  assert.equal(Number((await stock(id)).quantity), 0);
+  const pending = await db.transaction(principal, (c) =>
+    c.query('SELECT * FROM products WHERE id=$1', [id]),
+  );
+  assert.equal(pending.rows[0].price_pending, true);
+  assert.equal(Number(pending.rows[0].price_usd), 0);
+  const quoted = await request('/quotes/preview', {
+    rate: '40',
+    lines: [{ productId: id, quantity: '1' }],
+    payments: [],
+  });
+  assert.equal(quoted.status, 400);
+  assert.match(JSON.stringify(quoted.body), /precio de venta/);
+  const confirmed = await request('/goods/documents/' + d.id + '/confirm', { expectedVersion: 0 });
+  assert.equal(confirmed.status, 201);
+  assert.equal(Number((await stock(id)).quantity), 2);
+  const corrected = await request(
+    '/products/' + id,
+    {
+      name: 'MEDICAMENTO OCR 500MG X 10 CORREGIDO',
+      barcode: null,
+      priceUsd: '0',
+      taxCategory: 'exempt',
+      expectedVersion: 0,
+    },
+    'PATCH',
+  );
+  assert.equal(corrected.status, 200);
+  assert.equal(corrected.body.price_pending, true);
+  const priced = await request(
+    '/products/' + id,
+    {
+      name: corrected.body.name,
+      barcode: null,
+      priceUsd: '2',
+      taxCategory: 'exempt',
+      expectedVersion: 1,
+    },
+    'PATCH',
+  );
+  assert.equal(priced.status, 200);
+  assert.equal(priced.body.price_pending, false);
+  assert.equal(
+    (
+      await request('/quotes/preview', {
+        rate: '40',
+        lines: [{ productId: id, quantity: '1' }],
+        payments: [],
+      })
+    ).status,
+    201,
+  );
+
+  const duplicate = await request(
+    '/goods/invoice-images/apply',
+    reviewedInvoice({
+      invoiceNumber: 'OCR-002',
+      supplierRif: 'J888888888',
+      lines: [
+        {
+          name: 'NO DEBE QUEDAR CREADO',
+          quantity: '2',
+          unitCost: '10',
+          discountPercent: '0',
+          taxRate: '0',
+        },
+      ],
+    }),
+  );
+  assert.equal(duplicate.status, 409);
+  assert.equal(
+    (await owner.query("SELECT id FROM products WHERE name='NO DEBE QUEDAR CREADO'")).rowCount,
+    0,
+  );
+  assert.equal(
+    (
+      await owner.query("SELECT id FROM suppliers WHERE tenant_id=$1 AND rif='J888888888'", [
+        tenant,
+      ])
+    ).rowCount,
+    0,
+  );
+  assert.equal(
+    (await request('/goods/documents/' + d.id, undefined, 'GET', foreignToken, foreignTenant))
+      .status,
+    404,
+  );
+  const existing = await product('CODIGO-REAL-OCR');
+  const linked = await request(
+    '/goods/invoice-images/apply',
+    reviewedInvoice({
+      imageHash: 'b'.repeat(64),
+      invoiceNumber: 'OCR-003',
+      lines: [
+        {
+          name: 'Descripción abreviada del proveedor',
+          existingSku: 'CODIGO-REAL-OCR',
+          quantity: '2',
+          unitCost: '10',
+          discountPercent: '0',
+          taxRate: '0',
+        },
+      ],
+    }),
+  );
+  assert.equal(linked.status, 201);
+  assert.equal(linked.body.lines[0].product_id, existing);
+  assert.equal(linked.body.createdProducts, 0);
+  const price = await owner.query('SELECT price_usd,price_pending FROM products WHERE id=$1', [
+    existing,
+  ]);
+  assert.equal(Number(price.rows[0].price_usd), 100);
+  assert.equal(price.rows[0].price_pending, false);
+});
+test('exige revisión, cuadratura y permisos; rechaza la discrepancia del ejemplo antes de crear maestros', async () => {
+  for (const change of [
+    { reviewed: false },
+    { declaredTotal: '19' },
+    { imageHash: null },
+    { lines: [{ name: 'Cantidad inválida', quantity: '0', unitCost: '10', taxRate: '0' }] },
+  ])
+    assert.equal(
+      (await request('/goods/invoice-images/apply', reviewedInvoice(change))).status,
+      400,
+    );
+  const example = await request('/goods/invoice-images/example');
+  assert.equal(example.body.reading.lines.length, 18);
+  const input = reviewedInvoice({
+    supplierName: invoiceExample.supplierName,
+    supplierRif: invoiceExample.supplierRif,
+    invoiceNumber: invoiceExample.invoiceNumber,
+    controlNumber: invoiceExample.controlNumber,
+    declaredTotal: invoiceExample.declaredTotal,
+    branchId: branch,
+    sourceKind: 'example',
+    imageHash: null,
+    lines: invoiceExample.lines.map(({ name, quantity, unitCost, taxRate, sourceKey }) => ({
+      name,
+      quantity,
+      unitCost,
+      taxRate,
+      sourceKey,
+    })),
+  });
+  const mismatch = await request('/goods/invoice-images/apply', input);
+  assert.equal(mismatch.status, 400);
+  assert.match(JSON.stringify(mismatch.body), /203381/);
+  assert.equal(
+    (await request('/goods/invoice-images/apply', reviewedInvoice(), undefined, cashierToken))
+      .status,
+    403,
+  );
+});
+
 if (process.env.RUN_BROWSER === '1')
   test('navegador: factura de compra y ajuste de salida con documento e historial', async () => {
     const browser = await chromium.launch({
@@ -626,6 +865,19 @@ if (process.env.RUN_BROWSER === '1')
       assert.equal(
         await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth),
         true,
+        JSON.stringify(
+          await page.evaluate(() =>
+            [
+              ...document.querySelectorAll(
+                'dialog,dialog > *,dialog .dialog-footer,dialog .invoice-review-layout,dialog .table-scroll',
+              ),
+            ].map((e) => ({
+              name: e.className,
+              width: e.getBoundingClientRect().width,
+              x: e.getBoundingClientRect().x,
+            })),
+          ),
+        ),
       );
       if (process.env.SCREENSHOT_DIR)
         await page.screenshot({
@@ -638,7 +890,129 @@ if (process.env.RUN_BROWSER === '1')
       assert.equal(
         await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth),
         true,
+        JSON.stringify(
+          await page.evaluate(() =>
+            [
+              ...document.querySelectorAll(
+                'dialog,dialog > *,dialog .dialog-footer,dialog .invoice-review-layout,dialog .table-scroll',
+              ),
+            ].map((e) => ({
+              name: e.className,
+              width: e.getBoundingClientRect().width,
+              x: e.getBoundingClientRect().x,
+            })),
+          ),
+        ),
       );
+      assert.deepEqual(errors, []);
+    } finally {
+      await browser.close();
+    }
+  });
+
+if (process.env.RUN_BROWSER === '1')
+  test('navegador: sube una imagen, revisa OCR y crea factura sin recibir stock', async () => {
+    const browser = await chromium.launch({
+      executablePath: process.env.CHROMIUM_PATH ?? '/usr/bin/chromium',
+      headless: true,
+      args: ['--no-sandbox', '--disable-dev-shm-usage'],
+    });
+    try {
+      const page = await browser.newPage({
+        viewport: { width: 1440, height: 1000 },
+        locale: 'es-VE',
+        timezoneId: 'America/Caracas',
+      });
+      const errors: string[] = [];
+      page.on('pageerror', (e) => errors.push(e.message));
+      await page.goto(base.replace(/\/api$/, ''));
+      await page.getByLabel('Correo electrónico').fill('goods-admin@example.test');
+      await page.getByLabel('Contraseña', { exact: true }).fill(password);
+      await page.getByRole('button', { name: 'Ingresar al sistema' }).click();
+      await page.getByRole('heading', { name: 'Resumen de operaciones' }).waitFor();
+      await page.getByRole('button', { name: 'Facturas de compra', exact: true }).click();
+      await page.getByRole('button', { name: 'Importar imagen de factura' }).click();
+      const dialog = page.getByRole('dialog');
+      await dialog.getByLabel('Imagen de factura').setInputFiles({
+        name: 'factura-prueba.png',
+        mimeType: 'image/png',
+        buffer: await invoiceImage(),
+      });
+      await dialog.getByRole('button', { name: 'Leer imagen y preparar factura' }).click();
+      await dialog.getByLabel('Razón social del proveedor').waitFor({ timeout: 30000 });
+      await dialog.locator('.invoice-preview img').evaluate(
+        (img: HTMLImageElement) =>
+          new Promise<void>((resolve, reject) => {
+            if (img.complete) {
+              img.naturalWidth ? resolve() : reject(new Error('Invoice preview unavailable'));
+            } else {
+              img.onload = () => resolve();
+              img.onerror = () => reject(new Error('Invoice preview unavailable'));
+            }
+          }),
+      );
+      assert.ok(
+        (await dialog.getByLabel('Descripción importada 1').inputValue()).includes('ACETAMINOF'),
+      );
+      // The reviewer confirms all legally significant fields, including any uncertain OCR.
+      await dialog.getByLabel('Razón social del proveedor').fill('Proveedor OCR Navegador');
+      await dialog.getByLabel('RIF del proveedor').fill('J-50544767-0');
+      await dialog.getByLabel('Número de factura', { exact: true }).fill('BROWSER-OCR-144');
+      await dialog.getByLabel('Número de control', { exact: true }).fill('00-001864');
+      await dialog.getByLabel('Fecha de factura').fill('2026-09-27');
+      await dialog.getByLabel('Total impreso en la factura').fill('1949.70');
+      await dialog.getByLabel('Cantidad importada 1').fill('10');
+      await dialog.getByLabel('Costo importado 1').fill('194.97');
+      await dialog.getByLabel('IVA importado 1').selectOption('0');
+      const submit = dialog.getByRole('button', { name: 'Crear artículos y factura en borrador' });
+      assert.equal(await submit.isDisabled(), true);
+      await dialog.getByRole('checkbox').check();
+      assert.equal(await submit.isEnabled(), true);
+      if (process.env.SCREENSHOT_DIR)
+        await page.screenshot({
+          path: process.env.SCREENSHOT_DIR + '/importacion-imagen.png',
+          fullPage: true,
+        });
+      await page.setViewportSize({ width: 390, height: 844 });
+      assert.equal(
+        await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth),
+        true,
+        JSON.stringify(
+          await page.evaluate(() =>
+            [
+              ...document.querySelectorAll(
+                'dialog,dialog > *,dialog .dialog-footer,dialog .invoice-review-layout,dialog .table-scroll',
+              ),
+            ].map((e) => ({
+              name: e.className,
+              width: e.getBoundingClientRect().width,
+              x: e.getBoundingClientRect().x,
+            })),
+          ),
+        ),
+      );
+      await page.setViewportSize({ width: 1440, height: 1000 });
+      await submit.click();
+      await dialog.waitFor({ state: 'hidden' });
+      await page.getByRole('status').filter({ hasText: 'Factura importada en borrador' }).waitFor();
+      const doc = (
+        await request(
+          '/goods/documents?branchId=' + branch + '&kind=purchase&search=BROWSER-OCR-144',
+        )
+      ).body.items[0];
+      assert.equal(doc.status, 'draft');
+      const full = await request('/goods/documents/' + doc.id);
+      assert.equal(Number((await stock(full.body.lines[0].product_id)).quantity), 0);
+      await page.getByRole('button', { name: 'Importar imagen de factura' }).click();
+      await dialog.getByRole('button', { name: 'Revisar factura de ejemplo' }).click();
+      await dialog.getByLabel('Descripción importada 18').waitFor();
+      assert.equal(
+        await dialog
+          .getByRole('button', { name: 'Crear artículos y factura en borrador' })
+          .isDisabled(),
+        true,
+      );
+      assert.match(await dialog.innerText(), /no coincide/);
       assert.deepEqual(errors, []);
     } finally {
       await browser.close();

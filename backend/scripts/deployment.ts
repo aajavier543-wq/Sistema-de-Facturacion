@@ -2,9 +2,11 @@ import { Pool, escapeLiteral, escapeIdentifier } from 'pg';
 import { z } from 'zod';
 import { migrate } from './migrate';
 import { hashPassword } from '../src/security';
+import { seedInvoiceExample } from '../src/catalog-import';
 import { DeploymentFailure, DeploymentStage } from './deployment-errors';
 
 const configuration = z.object({
+  SEED_NICOPHARMA_EXAMPLE: z.enum(['true', 'false']).default('true'),
   MIGRATION_DATABASE_URL: z.url(),
   APP_DATABASE_NAME: z
     .string()
@@ -135,6 +137,30 @@ async function initializeConfiguredDeployment(
         await c2.query("INSERT INTO branches(tenant_id,name) VALUES($1,'Principal')", [
           tenant.rows[0].id,
         ]);
+      }
+      if (config.SEED_NICOPHARMA_EXAMPLE === 'true') {
+        const targetUser = (
+          await c2.query('SELECT id FROM users WHERE email=$1', [config.BOOTSTRAP_EMAIL])
+        ).rows[0];
+        const targetTenant = (
+          await c2.query('SELECT id FROM tenants WHERE rif=$1', [config.BOOTSTRAP_RIF])
+        ).rows[0];
+        await c2.query(
+          "SELECT set_config('app.tenant_id',$1,true),set_config('app.user_id',$2,true)",
+          [targetTenant.id, targetUser.id],
+        );
+        const loaded = await seedInvoiceExample(c2, {
+          tenantId: targetTenant.id,
+          userId: targetUser.id,
+          role: 'admin',
+        });
+        console.log(
+          'Example catalogue prepared:',
+          loaded.created,
+          'created;',
+          loaded.existing,
+          'already present. No stock was received.',
+        );
       }
       await c2.query('COMMIT');
     } catch (error) {

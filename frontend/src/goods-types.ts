@@ -44,4 +44,6 @@ export type GoodsDocument = {
   lines: GoodsLine[];
   confirmed_at: string | null;
   replayed?: boolean;
+  source_kind?: 'manual' | 'image' | 'example';
+  source_ocr_text?: string | null;
 };

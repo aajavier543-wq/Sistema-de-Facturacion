@@ -176,7 +176,7 @@ export function Quotation({
                     <p role="alert">{found.error}</p>
                   ) : found.data?.length ? (
                     found.data.map((p) => (
-                      <button key={p.id} onClick={() => add(p)}>
+                      <button key={p.id} disabled={p.price_pending} onClick={() => add(p)}>
                         <span>
                           <strong>{p.name}</strong>
                           <small>
@@ -184,7 +184,8 @@ export function Quotation({
                           </small>
                         </span>
                         <span className="number">
-                          $ {money(p.price_usd)} <Icon name="plus" size={15} />
+                          {p.price_pending ? 'Precio pendiente' : '$ ' + money(p.price_usd)}{' '}
+                          <Icon name="plus" size={15} />
                         </span>
                       </button>
                     ))
