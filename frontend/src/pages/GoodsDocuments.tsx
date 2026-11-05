@@ -5,6 +5,7 @@ import { Button, Dialog, Empty, Feedback, Icon, Pager } from '../components/ui';
 import { money, type Api, type PageResult, type Product } from '../types';
 import type { GoodsDocument, GoodsKind, Supplier } from '../goods-types';
 import { InvoiceImageImport } from './InvoiceImageImport';
+import { PurchasePricing } from './PurchasePricing';
 type Line = {
   key: string;
   productId: string;
@@ -115,6 +116,8 @@ export function GoodsDocuments({
   const [supplierSearch, setSupplierSearch] = useState('');
   const [supplierOpen, setSupplierOpen] = useState(false);
   const [imageImportOpen, setImageImportOpen] = useState(false);
+  const [pricingOpen, setPricingOpen] = useState(false);
+  const [pricingBusy, setPricingBusy] = useState(false);
   const attempt = useRef<{ signature: string; key: string } | null>(null);
   const itemRef = useRef<HTMLInputElement>(null);
   const formRef = useRef<HTMLFormElement>(null);
@@ -155,13 +158,13 @@ export function GoodsDocuments({
   const sums = totals(lines, kind);
   const currency = header.currency === 'VES' ? 'Bs' : 'USD';
   useEffect(() => {
-    onDirty(dirty);
+    onDirty(dirty || (pricingOpen && !confirmed));
     return () => onDirty(false);
-  }, [dirty]);
+  }, [dirty, pricingOpen, confirmed]);
   useEffect(() => {
-    onBusy(busy);
+    onBusy(busy || pricingBusy);
     return () => onBusy(false);
-  }, [busy]);
+  }, [busy, pricingBusy]);
   useEffect(() => {
     if (pending) {
       newDocument(pending.product);
@@ -348,7 +351,12 @@ export function GoodsDocuments({
           : { ...body, idempotencyKey: attempt.current.key },
       );
       hydrate(d);
-      setNotice('Borrador guardado. Las existencias no han cambiado.');
+      setNotice(
+        purchase
+          ? 'Borrador guardado. Define los márgenes antes de confirmar la recepción.'
+          : 'Borrador guardado. Las existencias no han cambiado.',
+      );
+      if (purchase && d.status === 'draft') setPricingOpen(true);
       onChanged();
     } catch (e) {
       setError((e as Error).message);
@@ -358,10 +366,14 @@ export function GoodsDocuments({
   }
   async function confirm() {
     if (!document || dirty) return;
+    if (purchase && document.pricing_required && !document.pricing_ready) {
+      setPricingOpen(true);
+      return;
+    }
     if (
       !window.confirm(
         purchase
-          ? '¿Confirmar la factura y recibir todos sus artículos en la sucursal seleccionada?'
+          ? '¿Confirmar la factura, recibir sus artículos y actualizar los precios de venta con los márgenes guardados?'
           : '¿Confirmar todas las entradas y salidas de este ajuste?',
       )
     )
@@ -377,7 +389,9 @@ export function GoodsDocuments({
       setNotice(
         d.replayed
           ? 'Este documento ya estaba confirmado; no se duplicaron movimientos.'
-          : 'Documento confirmado. Las existencias fueron actualizadas.',
+          : purchase && d.pricing_ready
+            ? 'Documento confirmado. Existencias y precios de venta actualizados.'
+            : 'Documento confirmado. Las existencias fueron actualizadas.',
       );
       onChanged();
     } catch (e) {
@@ -448,10 +462,29 @@ export function GoodsDocuments({
           onImported={(d) => {
             hydrate(d);
             setImageImportOpen(false);
+            setPricingOpen(true);
             setError('');
             setNotice(
               `Factura importada en borrador. ${d.createdProducts} artículos nuevos y ${d.linkedProducts} vinculados. Revisa el documento antes de confirmar la recepción.`,
             );
+            onChanged();
+          }}
+        />
+      )}
+      {pricingOpen && document && (
+        <PurchasePricing
+          api={api}
+          document={document}
+          rate={rate}
+          onBusy={setPricingBusy}
+          onClose={() => setPricingOpen(false)}
+          onSaved={(d) => {
+            hydrate(d);
+            setPricingOpen(false);
+            setNotice(
+              'Márgenes guardados. Al confirmar se recibirán las existencias y se actualizarán los precios de venta.',
+            );
+            setError('');
             onChanged();
           }}
         />
@@ -576,6 +609,11 @@ export function GoodsDocuments({
                 >
                   {purchase ? 'Confirmar y recibir' : 'Confirmar ajuste'}
                 </Button>
+                {purchase && document && (!confirmed || document.pricing_ready) && (
+                  <Button icon="edit" disabled={busy || dirty} onClick={() => setPricingOpen(true)}>
+                    {confirmed ? 'Ver márgenes' : 'Márgenes de ganancia'}
+                  </Button>
+                )}
                 {document && dirty && (
                   <Button
                     onClick={() => {
@@ -927,7 +965,7 @@ export function GoodsDocuments({
                 </p>
                 <small>
                   {purchase
-                    ? 'Esta recepción registra costos e IVA de compra. La condición de pago es informativa; no registra un cobro o pago bancario.'
+                    ? 'Carga costo, descuento e IVA. Al guardar podrás definir la ganancia por artículo; el IVA se añade después al precio de venta. La condición de pago es informativa.'
                     : 'Un mismo ajuste puede tener entradas y salidas de artículos distintos. Los costos declarados no cambian precios de venta.'}
                 </small>
                 <small>

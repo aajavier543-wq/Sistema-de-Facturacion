@@ -17,6 +17,9 @@ export type GoodsLine = {
   tax_amount: string;
   total: string;
   applied_cost_base: string | null;
+  profit_percent: string | null;
+  sale_price_usd: string | null;
+  pricing_product_version: number | null;
 };
 export type GoodsDocument = {
   id: string;
@@ -44,6 +47,9 @@ export type GoodsDocument = {
   lines: GoodsLine[];
   confirmed_at: string | null;
   replayed?: boolean;
+  pricing_required: boolean;
+  pricing_ready: boolean;
+  pricing_rate: string | null;
   source_kind?: 'manual' | 'image' | 'example';
   source_ocr_text?: string | null;
 };

@@ -2424,3 +2424,106 @@ td small {
 .invoice-review-lines td:nth-child(5) {
   min-width: 110px;
 }
+
+.dialog:has(.purchase-pricing) {
+  width: min(1240px, calc(100vw - 32px));
+  max-width: calc(100vw - 32px);
+}
+.purchase-pricing {
+  padding: 22px;
+  min-width: 0;
+}
+.purchase-pricing fieldset {
+  border: 0;
+  padding: 0;
+  margin: 0;
+  min-width: 0;
+}
+.pricing-explanation {
+  padding: 15px 18px;
+  border: 1px solid #dce5f1;
+  background: #f5f8fd;
+  border-radius: 8px;
+  font-size: 12px;
+  margin-bottom: 18px;
+}
+.pricing-explanation p {
+  margin-top: 6px;
+  color: #64748b;
+  line-height: 1.6;
+}
+.pricing-controls {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 24px;
+  align-items: start;
+  margin-bottom: 16px;
+}
+.pricing-controls label {
+  display: grid;
+  gap: 6px;
+  font-size: 12px;
+}
+.pricing-controls input {
+  width: 100%;
+  min-width: 0;
+}
+.pricing-controls small {
+  font-size: 11px;
+  color: #64748b;
+}
+.pricing-controls > div {
+  display: flex;
+  gap: 12px;
+  align-items: end;
+}
+.pricing-controls > div label {
+  flex: 1;
+  min-width: 0;
+}
+.purchase-pricing-lines {
+  min-width: 1040px;
+}
+.purchase-pricing-lines td:first-child {
+  min-width: 240px;
+  max-width: 310px;
+  white-space: normal;
+}
+.purchase-pricing-lines td:first-child strong {
+  display: block;
+  font-size: 12px;
+}
+.purchase-pricing-lines small {
+  display: block;
+  font-size: 11px;
+  color: #64748b;
+  margin-top: 5px;
+}
+.purchase-pricing-lines input {
+  width: 86px;
+  min-width: 0;
+}
+.purchase-pricing-lines .pricing-final {
+  font-weight: 700;
+  color: #17634b;
+  background: #f3faf7;
+}
+.purchase-pricing .dialog-footer {
+  padding: 18px 0 0;
+  flex-wrap: wrap;
+}
+@media (max-width: 600px) {
+  .purchase-pricing {
+    padding: 14px;
+  }
+  .pricing-controls {
+    grid-template-columns: 1fr;
+    gap: 16px;
+  }
+  .pricing-controls > div {
+    flex-wrap: wrap;
+  }
+  .purchase-pricing .dialog-footer .btn {
+    white-space: normal;
+  }
+}

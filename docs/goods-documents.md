@@ -28,14 +28,64 @@ artículo seleccionado. No hay una segunda pantalla de ajuste rápido dentro de 
 3. Introduce fecha, descripción, número de factura del proveedor, número de control,
    condición de pago, moneda y tasa. Para crédito, indica un vencimiento no anterior a la factura.
 4. Agrega cantidades, costos unitarios, descuento porcentual e IVA por renglón (0/exento, 8 o 16 %).
-5. Guarda y revisa el borrador. **Confirmar y recibir** registra la recepción y las entradas de stock.
+5. **Guardar borrador** conserva los costos de compra y abre **Márgenes de ganancia**.
+6. Indica el porcentaje de cada artículo. Puedes aplicar uno a todos y después modificar cada
+   renglón. Para facturas en Bs, indica la tasa Bs/USD usada para fijar precios; para facturas
+   en USD se conserva la tasa del documento. **Guardar márgenes** conserva la propuesta.
+7. **Confirmar y recibir** registra stock y actualiza los precios de venta en una sola transacción.
+   Puedes reabrir **Márgenes de ganancia** mientras el documento siga en borrador. Después
+   de confirmar, **Ver márgenes** permite consultar la propuesta protegida.
 
 El número `FC-...` es un identificador interno; no sustituye el número/control del proveedor
 ni es un correlativo fiscal de ventas. El sistema rechaza un segundo documento con el mismo
 número de factura normalizado para el mismo proveedor y empresa, incluso en otra sucursal.
 
 La condición de pago es informativa: esta entrega no ejecuta pagos, no mueve caja/bancos y
-no lleva aún cuentas por pagar. Una compra recibida no modifica el precio de venta del artículo.
+no lleva aún cuentas por pagar. Los costos y descuentos se capturan sin pedir precios de venta.
+Los márgenes se revisan después de guardar y se aplican al catálogo al confirmar la recepción.
+
+## Ganancia e IVA por artículo
+
+El porcentaje solicitado es un **recargo sobre el costo neto**, no un porcentaje sobre el
+precio de venta. Se aplica sobre el costo después del descuento y antes de IVA:
+
+```
+Costo neto unitario = base neta del renglón / cantidad
+Precio sin IVA = costo neto unitario × (1 + ganancia / 100)
+IVA de venta = precio sin IVA × alícuota
+Precio final = precio sin IVA + IVA de venta
+```
+
+Ejemplo en Bs: costo 100, descuento 10 %, ganancia 30 %, IVA 16 % → costo neto 90,
+venta sin IVA 117, IVA 18,72 y precio final **135,72**. Un artículo exento queda en 117.
+El IVA no forma parte del costo usado para calcular la ganancia. La base del renglón ya
+incluye el redondeo del descuento de compra; no se duplica el descuento.
+
+El catálogo guarda el precio en USD **sin IVA**, con seis decimales, y la alícuota por separado.
+En una compra VES se divide el costo neto entre la tasa de fijación de precios antes de
+aplicar la ganancia. Esa tasa es independiente del factor 1 usado para valorar la factura
+VES en la moneda base VES. La referencia en bolívares usa el mismo redondeo del cotizador
+(base y luego IVA a dos decimales); los importes mostrados en USD también se redondean.
+La tasa sigue siendo manual; esta pantalla no consulta el BCV.
+
+El porcentaje se conserva en el documento y, al confirmar, como sugerencia para la siguiente
+compra de ese producto. El rango técnico admitido es 0–1000 %, con hasta cuatro decimales;
+no representa una validación normativa de límites de utilidad.
+
+Guardar márgenes no cambia catálogo ni existencias. Las nuevas compras requieren completar
+ese paso antes de recibir; los documentos anteriores a la migración mantienen su comportamiento
+previo hasta que se editen o se guarden márgenes explícitamente. Si se modifica el costo,
+descuento, IVA o cualquier dato del borrador, se conserva el porcentaje pero se invalida la
+propuesta: hay que guardarla de nuevo. Los confirmados permanecen inmutables.
+
+Cada propuesta guarda la versión de los artículos revisados. Si otro usuario modifica un
+producto/precio antes de confirmar, la recepción falla sin mover stock ni sobrescribir precios;
+el administrador debe reabrir y guardar los márgenes con los valores actuales. Los reintentos
+de guardar y confirmar son idempotentes y las operaciones quedan auditadas bajo RLS.
+
+Para bonificaciones o costos netos cero no se puede deducir un precio positivo con un recargo:
+se conserva el precio existente. Los artículos nuevos con precio pendiente continúan pendientes,
+aunque se reciba la mercancía; la ficha permite definir su precio de venta posteriormente.
 
 ## Consulta, permisos y protección
 
@@ -92,10 +142,12 @@ No se agregó importación FTP, emisión fiscal, anulaciones ni devolución de c
 | POST | `/api/goods/documents/preview` | Validar referencias y calcular, sin guardar |
 | POST | `/api/goods/documents` | Crear borrador con `idempotencyKey` |
 | PATCH | `/api/goods/documents/:id` | Reemplazar el borrador con `expectedVersion` |
+| GET | `/api/goods/documents/:id/pricing` | Documento y precios/versiones actuales para revisar márgenes |
+| POST | `/api/goods/documents/:id/pricing` | Guardar tasa, porcentajes y versiones revisadas con idempotencia |
 | POST | `/api/goods/documents/:id/confirm` | Confirmar con `{ "expectedVersion": 0 }` |
 
-La migración `003_goods_documents.sql` agrega estas tablas, referencias, permisos, costos
-y protecciones. Antes de iniciar la API local hay que ejecutar `npm run build` y
+La migración `003_goods_documents.sql` agrega las tablas y protecciones;
+`005_purchase_pricing.sql` agrega porcentajes, propuestas de precios y control de revisión. Antes de iniciar la API local hay que ejecutar `npm run build` y
 `npm run migrate` desde `backend`; el script de Render ya ejecuta las migraciones al arrancar,
 pero su configuración y sus recursos no fueron modificados en esta tarea.
 

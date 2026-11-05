@@ -11,6 +11,7 @@ import { Database, Principal } from './database';
 import { requireAdmin } from './auth';
 import { amount, calculateGoods } from './goods-calculation';
 import { GoodsInput } from './goods-validation';
+import { calculatePurchasePrice, PricingInput } from './purchase-pricing';
 
 @Injectable()
 export class GoodsService {
@@ -31,7 +32,22 @@ export class GoodsService {
       'SELECT * FROM inventory_document_lines WHERE document_id=$1 ORDER BY position',
       [id],
     );
-    return { ...result.rows[0], display_number: this.number(result.rows[0]), lines: lines.rows };
+    const d = result.rows[0];
+    return {
+      ...d,
+      display_number: this.number(d),
+      lines: lines.rows,
+      pricing_ready:
+        d.kind === 'purchase' &&
+        !!d.pricing_rate &&
+        lines.rows.length > 0 &&
+        lines.rows.every(
+          (l) =>
+            l.profit_percent !== null &&
+            l.sale_price_usd !== null &&
+            l.pricing_product_version !== null,
+        ),
+    };
   }
   private number(d: { kind: string; number: string }) {
     return (d.kind === 'adjustment' ? 'AJ-' : 'FC-') + String(d.number).padStart(6, '0');
@@ -158,11 +174,21 @@ export class GoodsService {
       calculated.total,
     ];
     let documentId = id;
+    const previousMargins = id
+      ? new Map(
+          (
+            await c.query(
+              'SELECT product_id,profit_percent FROM inventory_document_lines WHERE document_id=$1',
+              [id],
+            )
+          ).rows.map((l) => [l.product_id, l.profit_percent]),
+        )
+      : new Map<string, string>();
     if (id) {
       await c.query(
         `UPDATE inventory_documents SET document_date=$2,description=$3,currency=$4,exchange_rate=$5,
          supplier_id=$6,invoice_number=$7,control_number=$8,payment_terms=$9,due_date=$10,
-         subtotal=$11,discount_total=$12,tax_total=$13,total=$14,version=version+1 WHERE id=$1`,
+         subtotal=$11,discount_total=$12,tax_total=$13,total=$14,version=version+1,pricing_required=(kind='purchase'),pricing_rate=NULL,pricing_key=NULL,pricing_hash=NULL WHERE id=$1`,
         [id, ...values],
       );
       await c.query('DELETE FROM inventory_document_lines WHERE document_id=$1', [id]);
@@ -175,8 +201,8 @@ export class GoodsService {
       const doc = await c.query(
         `INSERT INTO inventory_documents(tenant_id,branch_id,kind,number,document_date,
          description,currency,exchange_rate,supplier_id,invoice_number,control_number,payment_terms,due_date,
-         subtotal,discount_total,tax_total,total,create_key,create_hash,created_by)
-         VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20) RETURNING id`,
+         subtotal,discount_total,tax_total,total,create_key,create_hash,created_by,pricing_required)
+         VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21) RETURNING id`,
         [
           p.tenantId,
           data.branchId,
@@ -186,6 +212,7 @@ export class GoodsService {
           createKey,
           hash,
           p.userId,
+          data.kind === 'purchase',
         ],
       );
       documentId = doc.rows[0].id;
@@ -195,8 +222,8 @@ export class GoodsService {
       const product = products.get(l.productId)!;
       await c.query(
         `INSERT INTO inventory_document_lines(tenant_id,document_id,branch_id,position,product_id,sku,name,
-         direction,quantity,unit_cost,discount_percent,tax_rate,gross,discount_amount,taxable_base,tax_amount,total)
-         VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)`,
+         direction,quantity,unit_cost,discount_percent,tax_rate,gross,discount_amount,taxable_base,tax_amount,total,profit_percent)
+         VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)`,
         [
           p.tenantId,
           documentId,
@@ -215,6 +242,7 @@ export class GoodsService {
           l.taxableBase,
           l.taxAmount,
           l.total,
+          data.kind === 'purchase' ? (previousMargins.get(l.productId) ?? null) : null,
         ],
       );
     }
@@ -229,6 +257,97 @@ export class GoodsService {
       ],
     );
     return { ...(await this.read(c, documentId!)), replayed: false };
+  }
+  async pricingContext(p: Principal, id: string) {
+    requireAdmin(p);
+    return this.db.transaction(p, async (c) => {
+      const document = await this.read(c, id);
+      if (document.kind !== 'purchase')
+        throw new BadRequestException('Solo las facturas de compra llevan márgenes');
+      const products = (
+        await c.query(
+          'SELECT id,sku,name,price_usd,price_pending,profit_percent,version,active FROM products WHERE id=ANY($1::uuid[])',
+          [document.lines.map((l: { product_id: string }) => l.product_id)],
+        )
+      ).rows;
+      return { document, products };
+    });
+  }
+  async savePricing(p: Principal, id: string, input: PricingInput) {
+    requireAdmin(p);
+    const hash = createHash('sha256')
+      .update(
+        JSON.stringify({
+          ...input,
+          lines: [...input.lines].sort((a, b) => a.lineId.localeCompare(b.lineId)),
+        }),
+      )
+      .digest('hex');
+    return this.db.transaction(p, async (c) => {
+      const d = (await c.query('SELECT * FROM inventory_documents WHERE id=$1 FOR UPDATE', [id]))
+        .rows[0];
+      if (!d) throw new NotFoundException('Documento no disponible');
+      if (d.kind !== 'purchase')
+        throw new BadRequestException('Solo las facturas de compra llevan márgenes');
+      if (d.pricing_key === input.idempotencyKey) {
+        if (d.pricing_hash !== hash)
+          throw new ConflictException('La clave de márgenes ya fue usada con otros datos');
+        return { ...(await this.read(c, id)), replayed: true };
+      }
+      if (d.status !== 'draft') throw new ConflictException('La factura ya está confirmada');
+      if (d.version !== input.expectedVersion)
+        throw new ConflictException(
+          'La factura cambió. Actualiza el documento antes de revisar márgenes.',
+        );
+      if (d.currency === 'USD' && !new Decimal(input.rate).eq(d.exchange_rate))
+        throw new BadRequestException(
+          'Usa la tasa de la factura en dólares para la vista de precios en bolívares',
+        );
+      const lines = (
+        await c.query(
+          'SELECT * FROM inventory_document_lines WHERE document_id=$1 ORDER BY product_id',
+          [id],
+        )
+      ).rows;
+      if (
+        lines.length !== input.lines.length ||
+        lines.some((l) => !input.lines.some((v) => v.lineId === l.id))
+      )
+        throw new BadRequestException('Revisa los márgenes de todos los artículos de la factura');
+      const products = (
+        await c.query(
+          'SELECT id,version,active FROM products WHERE id=ANY($1::uuid[]) ORDER BY id FOR SHARE',
+          [lines.map((l) => l.product_id)],
+        )
+      ).rows;
+      for (const l of lines) {
+        const selection = input.lines.find((v) => v.lineId === l.id)!;
+        const product = products.find((v) => v.id === l.product_id);
+        if (!product?.active || product.version !== selection.expectedProductVersion)
+          throw new ConflictException(
+            'Un artículo o precio cambió. Vuelve a abrir los márgenes para revisar los valores actuales.',
+          );
+        const price = calculatePurchasePrice(l, d.currency, input.rate, selection.profitPercent);
+        await c.query(
+          'UPDATE inventory_document_lines SET profit_percent=$2,sale_price_usd=$3,pricing_product_version=$4 WHERE id=$1',
+          [l.id, selection.profitPercent, price.salePriceUsd, product.version],
+        );
+      }
+      await c.query(
+        'UPDATE inventory_documents SET pricing_required=true,pricing_rate=$2,pricing_key=$3,pricing_hash=$4,version=version+1 WHERE id=$1',
+        [id, input.rate, input.idempotencyKey, hash],
+      );
+      await c.query(
+        `INSERT INTO audit_events(tenant_id,actor_id,action,entity_id,details) VALUES($1,$2,'goods.pricing.save',$3,$4)`,
+        [
+          p.tenantId,
+          p.userId,
+          id,
+          JSON.stringify({ rate: input.rate, lines: input.lines, previousVersion: d.version }),
+        ],
+      );
+      return { ...(await this.read(c, id)), replayed: false };
+    });
   }
   async confirm(p: Principal, id: string, expectedVersion: number) {
     requireAdmin(p);
@@ -249,11 +368,30 @@ export class GoodsService {
       ).rows;
       if (!lines.length) throw new ConflictException('No hay renglones para confirmar');
       const products = await c.query(
-        'SELECT id FROM products WHERE id=ANY($1::uuid[]) AND active',
+        // Prices are non-key updates: allow the FK key-share locks used by stock movements.
+        'SELECT * FROM products WHERE id=ANY($1::uuid[]) AND active ORDER BY id FOR NO KEY UPDATE',
         [lines.map((l) => l.product_id)],
       );
       if (products.rowCount !== lines.length)
         throw new ConflictException('Un artículo ya no está disponible. Revisa el borrador.');
+      const priced = d.kind === 'purchase' && d.pricing_rate !== null;
+      if (d.pricing_required && !priced)
+        throw new ConflictException(
+          'Define los márgenes de ganancia antes de confirmar la compra.',
+        );
+      if (priced) {
+        for (const l of lines) {
+          const product = products.rows.find((x) => x.id === l.product_id)!;
+          if (
+            l.profit_percent === null ||
+            l.sale_price_usd === null ||
+            l.pricing_product_version !== product.version
+          )
+            throw new ConflictException(
+              'Los precios o artículos cambiaron. Abre Márgenes de ganancia, revisa y guarda de nuevo antes de recibir.',
+            );
+        }
+      }
       // All documents lock balances in the same order, including zero balances for new products.
       for (const l of lines)
         await c.query(
@@ -322,6 +460,38 @@ export class GoodsService {
             applied?.toFixed(8) ?? null,
           ],
         );
+      }
+      if (priced) {
+        for (const l of lines) {
+          // Zero-cost/fully discounted goods never overwrite a valid existing sale price.
+          if (new Decimal(l.sale_price_usd).isZero()) continue;
+          const before = products.rows.find((x) => x.id === l.product_id)!;
+          const after = (
+            await c.query(
+              `UPDATE products SET price_usd=$2,tax_category=$3,profit_percent=$4,price_pending=false,version=version+1
+            WHERE id=$1 RETURNING id,price_usd,tax_category,profit_percent,price_pending,version`,
+              [
+                l.product_id,
+                l.sale_price_usd,
+                Number(l.tax_rate) === 16
+                  ? 'general'
+                  : Number(l.tax_rate) === 8
+                    ? 'reduced'
+                    : 'exempt',
+                l.profit_percent,
+              ],
+            )
+          ).rows[0];
+          await c.query(
+            `INSERT INTO audit_events(tenant_id,actor_id,action,entity_id,details) VALUES($1,$2,'product.purchase.price',$3,$4)`,
+            [
+              p.tenantId,
+              p.userId,
+              l.product_id,
+              JSON.stringify({ documentId: id, lineId: l.id, before, after, rate: d.pricing_rate }),
+            ],
+          );
+        }
       }
       await c.query(
         `UPDATE inventory_documents SET status='confirmed',confirmed_by=$2,confirmed_at=now(),

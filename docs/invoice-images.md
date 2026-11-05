@@ -29,7 +29,10 @@ Al guardar se crea **un borrador de compra** y sus maestros en una transacción:
 
 Los precios de venta pendientes impiden cotizar esos artículos, incluso llamando a la API.
 La ficha permite corregir nombres e IVA manteniendo el precio pendiente en cero; indicar
-un precio mayor que cero permite cotizar. No se cambian los precios de artículos existentes.
+un precio mayor que cero permite cotizar. Después de importar también se abre la pantalla
+**Márgenes de ganancia**: permite fijar cada porcentaje sobre costo neto y añadir el IVA después.
+La propuesta modifica los precios de artículos nuevos o existentes al confirmar la recepción,
+según [el flujo de márgenes de compra](goods-documents.md#ganancia-e-iva-por-artículo).
 Todas las operaciones requieren sesión y administrador; los registros mantienen el RLS.
 
 El archivo original no se conserva en el disco efímero de Render ni en PostgreSQL. Solo

@@ -55,6 +55,23 @@ async function request(
   });
   return { status: response.status, body: (await response.json()) as any };
 }
+async function priceDocument(id: string, rate: string, percents: string[] = ['0']) {
+  const context = await request('/goods/documents/' + id + '/pricing');
+  assert.equal(context.status, 200, JSON.stringify(context.body));
+  const { document, products } = context.body;
+  const result = await request('/goods/documents/' + id + '/pricing', {
+    expectedVersion: document.version,
+    idempotencyKey: randomUUID(),
+    rate,
+    lines: document.lines.map((l: any, i: number) => ({
+      lineId: l.id,
+      profitPercent: percents[i] ?? percents[0],
+      expectedProductVersion: products.find((p: any) => p.id === l.product_id).version,
+    })),
+  });
+  assert.equal(result.status, 201, JSON.stringify(result.body));
+  return result.body;
+}
 async function product(sku: string, company = tenant) {
   return (
     await owner.query(
@@ -358,8 +375,9 @@ test('factura con descuento e IVA recibe mercancía una vez y excluye IVA del co
   assert.equal(Number(created.body.tax_total), 2.88);
   assert.equal(created.body.invoice_number, 'INV-001');
   assert.equal(Number((await stock(a)).quantity), 0);
+  const pricedPurchase = await priceDocument(created.body.id, '40', ['0', '0']);
   const confirmed = await request('/goods/documents/' + created.body.id + '/confirm', {
-    expectedVersion: 0,
+    expectedVersion: pricedPurchase.version,
   });
   assert.equal(confirmed.status, 201);
   assert.equal(Number((await stock(a)).quantity), 2);
@@ -390,7 +408,7 @@ test('factura con descuento e IVA recibe mercancía una vez y excluye IVA del co
   const runtimeProduct = await db.transaction(principal, (c) =>
     c.query('SELECT price_usd FROM products WHERE id=$1', [a]),
   );
-  assert.equal(Number(runtimeProduct.rows[0].price_usd), 100);
+  assert.equal(Number(runtimeProduct.rows[0].price_usd), 9);
 });
 test('el promedio ponderado se conserva en salidas y no inventa costos históricos desconocidos', async () => {
   const a = await product('PROMEDIO');
@@ -605,9 +623,7 @@ test('importar crea proveedor y factura atómicamente, conserva precios y recibe
   });
   assert.equal(quoted.status, 400);
   assert.match(JSON.stringify(quoted.body), /precio de venta/);
-  const confirmed = await request('/goods/documents/' + d.id + '/confirm', { expectedVersion: 0 });
-  assert.equal(confirmed.status, 201);
-  assert.equal(Number((await stock(id)).quantity), 2);
+
   const corrected = await request(
     '/products/' + id,
     {
@@ -644,6 +660,13 @@ test('importar crea proveedor y factura atómicamente, conserva precios y recibe
     ).status,
     201,
   );
+
+  const pricedImport = await priceDocument(d.id, '40', ['30']);
+  const confirmed = await request('/goods/documents/' + d.id + '/confirm', {
+    expectedVersion: pricedImport.version,
+  });
+  assert.equal(confirmed.status, 201);
+  assert.equal(Number((await stock(id)).quantity), 2);
 
   const duplicate = await request(
     '/goods/invoice-images/apply',
@@ -746,6 +769,320 @@ test('exige revisión, cuadratura y permisos; rechaza la discrepancia del ejempl
   );
 });
 
+function purchaseInput(
+  ids: string[],
+  invoiceNumber: string,
+  overrides: Record<string, unknown> = {},
+) {
+  return adjustment(ids[0]!, {
+    kind: 'purchase',
+    supplierId: supplier,
+    invoiceNumber,
+    controlNumber: '00-' + invoiceNumber,
+    paymentTerms: 'cash',
+    lines: ids.map((id) => ({
+      productId: id,
+      direction: 'entry',
+      quantity: '1',
+      unitCost: '100',
+      discountPercent: '0',
+      taxRate: '0',
+    })),
+    ...overrides,
+  });
+}
+test('márgenes por artículo: costo neto, IVA separado, borrador sin cambios y confirmación integral idempotente', async () => {
+  const a = await product('MARGEN-GRAVADO'),
+    b = await product('MARGEN-EXENTO');
+  const created = await request(
+    '/goods/documents',
+    purchaseInput([a, b], 'MARGIN-001', {
+      lines: [
+        {
+          productId: a,
+          direction: 'entry',
+          quantity: '2',
+          unitCost: '100',
+          discountPercent: '10',
+          taxRate: '16',
+        },
+        {
+          productId: b,
+          direction: 'entry',
+          quantity: '1',
+          unitCost: '50',
+          discountPercent: '0',
+          taxRate: '0',
+        },
+      ],
+    }),
+  );
+  assert.equal(created.status, 201);
+  assert.equal(created.body.pricing_required, true);
+  assert.equal(
+    (await request('/goods/documents/' + created.body.id + '/confirm', { expectedVersion: 0 }))
+      .status,
+    409,
+  );
+  const context = (await request('/goods/documents/' + created.body.id + '/pricing')).body;
+  const body = {
+    expectedVersion: 0,
+    idempotencyKey: randomUUID(),
+    rate: '1',
+    lines: context.document.lines.map((l: any, i: number) => ({
+      lineId: l.id,
+      profitPercent: i === 0 ? '30' : '50',
+      expectedProductVersion: context.products.find((p: any) => p.id === l.product_id).version,
+    })),
+  };
+  const saved = await Promise.all([
+    request('/goods/documents/' + created.body.id + '/pricing', body),
+    request('/goods/documents/' + created.body.id + '/pricing', body),
+  ]);
+  assert.ok(
+    saved.every((r) => r.status === 201),
+    JSON.stringify(saved),
+  );
+  assert.equal(saved.filter((r) => r.body.replayed).length, 1);
+  const d = saved[0]!.body;
+  assert.equal(d.version, 1);
+  assert.equal(d.pricing_ready, true);
+  assert.deepEqual(
+    d.lines.map((l: any) => Number(l.sale_price_usd)),
+    [117, 75],
+  );
+  assert.equal(Number(d.total), 258.8);
+  const prices = await owner.query('SELECT price_usd FROM products WHERE id=ANY($1::uuid[])', [
+    [a, b],
+  ]);
+  assert.ok(prices.rows.every((p) => Number(p.price_usd) === 100));
+  assert.equal(Number((await stock(a)).quantity), 0);
+  const confirmations = await Promise.all([
+    request('/goods/documents/' + d.id + '/confirm', { expectedVersion: 1 }),
+    request('/goods/documents/' + d.id + '/confirm', { expectedVersion: 1 }),
+  ]);
+  assert.ok(
+    confirmations.every((r) => r.status === 201),
+    JSON.stringify(confirmations),
+  );
+  assert.equal(confirmations.filter((r) => r.body.replayed).length, 1);
+  const catalogue = await owner.query(
+    'SELECT id,price_usd,profit_percent,tax_category,version FROM products WHERE id=ANY($1::uuid[])',
+    [[a, b]],
+  );
+  const pa = catalogue.rows.find((p) => p.id === a)!,
+    pb = catalogue.rows.find((p) => p.id === b)!;
+  assert.equal(Number(pa.price_usd), 117);
+  assert.equal(Number(pa.profit_percent), 30);
+  assert.equal(pa.tax_category, 'general');
+  assert.equal(pa.version, 1);
+  assert.equal(Number(pb.price_usd), 75);
+  assert.equal(pb.tax_category, 'exempt');
+  assert.equal(Number((await stock(a)).quantity), 2);
+  assert.equal(Number((await stock(a)).average_cost_base), 90);
+  const q = await request('/quotes/preview', {
+    rate: '1',
+    lines: [
+      { productId: a, quantity: '1' },
+      { productId: b, quantity: '1' },
+    ],
+    payments: [],
+  });
+  assert.equal(q.status, 201);
+  assert.equal(q.body.purchaseTotalBase, '210.72');
+  const next = await request('/goods/documents', purchaseInput([a], 'MARGIN-PREFERENCE'));
+  const preference = await request('/goods/documents/' + next.body.id + '/pricing');
+  assert.equal(Number(preference.body.products[0].profit_percent), 30);
+});
+test('cambios concurrentes del catálogo obligan a revisar márgenes sin recibir stock ni sobrescribir precios', async () => {
+  const id = await product('MARGEN-CONCURRENCIA');
+  const created = await request(
+    '/goods/documents',
+    purchaseInput([id], 'MARGIN-RACE', { currency: 'USD', exchangeRate: '40' }),
+  );
+  const priced = await priceDocument(created.body.id, '40', ['30']);
+  const manual = await request(
+    '/products/' + id,
+    {
+      name: 'MARGEN-CONCURRENCIA',
+      barcode: null,
+      priceUsd: '150',
+      taxCategory: 'exempt',
+      expectedVersion: 0,
+    },
+    'PATCH',
+  );
+  assert.equal(manual.status, 200);
+  assert.equal(
+    (
+      await request('/goods/documents/' + priced.id + '/confirm', {
+        expectedVersion: priced.version,
+      })
+    ).status,
+    409,
+  );
+  assert.equal(Number((await stock(id)).quantity), 0);
+  assert.equal(
+    Number(
+      (await owner.query('SELECT price_usd FROM products WHERE id=$1', [id])).rows[0].price_usd,
+    ),
+    150,
+  );
+  const refreshed = await priceDocument(priced.id, '40', ['25']);
+  assert.equal(
+    (
+      await request('/goods/documents/' + priced.id + '/confirm', {
+        expectedVersion: refreshed.version,
+      })
+    ).status,
+    201,
+  );
+  assert.equal(
+    Number(
+      (await owner.query('SELECT price_usd FROM products WHERE id=$1', [id])).rows[0].price_usd,
+    ),
+    125,
+  );
+  const rejected = await request('/goods/documents/' + priced.id + '/pricing', {
+    expectedVersion: refreshed.version + 1,
+    idempotencyKey: randomUUID(),
+    rate: '40',
+    lines: [{ lineId: refreshed.lines[0].id, profitPercent: '30', expectedProductVersion: 2 }],
+  });
+  assert.equal(rejected.status, 409);
+});
+test('editar costos invalida los precios propuestos y conserva el porcentaje para recalcular', async () => {
+  const id = await product('MARGEN-RECALCULO');
+  const body = purchaseInput([id], 'MARGIN-EDIT');
+  const created = await request('/goods/documents', body);
+  const priced = await priceDocument(created.body.id, '40', ['30']);
+  const { idempotencyKey, ...edit } = body;
+  const saved = await request(
+    '/goods/documents/' + created.body.id,
+    {
+      ...edit,
+      expectedVersion: priced.version,
+      lines: [
+        {
+          productId: id,
+          direction: 'entry',
+          quantity: '1',
+          unitCost: '200',
+          discountPercent: '0',
+          taxRate: '0',
+        },
+      ],
+    },
+    'PATCH',
+  );
+  assert.equal(saved.status, 200);
+  assert.equal(saved.body.pricing_ready, false);
+  assert.equal(saved.body.pricing_rate, null);
+  assert.equal(Number(saved.body.lines[0].profit_percent), 30);
+  assert.equal(saved.body.lines[0].sale_price_usd, null);
+  assert.equal(
+    (
+      await request('/goods/documents/' + created.body.id + '/confirm', {
+        expectedVersion: saved.body.version,
+      })
+    ).status,
+    409,
+  );
+  const recalculated = await priceDocument(created.body.id, '40', ['30']);
+  assert.equal(Number(recalculated.lines[0].sale_price_usd), 6.5);
+});
+test('la revisión de márgenes respeta RLS, permisos y todos los renglones; no admite precios enviados por el cliente', async () => {
+  const id = await product('MARGEN-VALIDACION');
+  const created = await request('/goods/documents', purchaseInput([id], 'MARGIN-VALID'));
+  const d = created.body;
+  const valid = {
+    expectedVersion: 0,
+    idempotencyKey: randomUUID(),
+    rate: '40',
+    lines: [{ lineId: d.lines[0].id, profitPercent: '30', expectedProductVersion: 0 }],
+  };
+  const path = '/goods/documents/' + d.id + '/pricing';
+  for (const change of [
+    { rate: '0' },
+    { lines: [] },
+    { lines: [{ ...valid.lines[0], lineId: randomUUID() }] },
+    { lines: [{ ...valid.lines[0], salePriceUsd: '1' }] },
+    { lines: [{ ...valid.lines[0], profitPercent: '1001' }] },
+  ])
+    assert.equal((await request(path, { ...valid, ...change })).status, 400);
+  assert.equal((await request(path, valid, undefined, cashierToken)).status, 403);
+  assert.equal((await request(path, undefined, 'GET', cashierToken)).status, 403);
+  assert.equal((await request(path, valid, undefined, foreignToken, foreignTenant)).status, 404);
+  assert.equal((await request(path, undefined, 'GET', foreignToken, foreignTenant)).status, 404);
+  assert.equal(
+    (await request(path, { ...valid, lines: [{ ...valid.lines[0], expectedProductVersion: 99 }] }))
+      .status,
+    409,
+  );
+  const adjustmentDocument = await request('/goods/documents', adjustment(id));
+  assert.equal(
+    (await request('/goods/documents/' + adjustmentDocument.body.id + '/pricing')).status,
+    400,
+  );
+  const usd = await request(
+    '/goods/documents',
+    purchaseInput([id], 'MARGIN-USD-RATE', { currency: 'USD', exchangeRate: '40' }),
+  );
+  assert.equal(
+    (
+      await request('/goods/documents/' + usd.body.id + '/pricing', {
+        ...valid,
+        rate: '50',
+        lines: [{ ...valid.lines[0], lineId: usd.body.lines[0].id }],
+      })
+    ).status,
+    400,
+  );
+});
+test('bonificaciones de costo neto cero conservan precios existentes y no habilitan artículos nuevos a precio cero', async () => {
+  const a = await product('BONIFICACION-EXISTENTE'),
+    b = await product('BONIFICACION-NUEVO');
+  await owner.query('UPDATE products SET price_usd=0,price_pending=true WHERE id=$1', [b]);
+  const created = await request(
+    '/goods/documents',
+    purchaseInput([a, b], 'MARGIN-ZERO', {
+      lines: [
+        {
+          productId: a,
+          direction: 'entry',
+          quantity: '1',
+          unitCost: '100',
+          discountPercent: '100',
+          taxRate: '16',
+        },
+        {
+          productId: b,
+          direction: 'entry',
+          quantity: '1',
+          unitCost: '0',
+          discountPercent: '0',
+          taxRate: '0',
+        },
+      ],
+    }),
+  );
+  const priced = await priceDocument(created.body.id, '40', ['30', '30']);
+  const confirmed = await request('/goods/documents/' + priced.id + '/confirm', {
+    expectedVersion: priced.version,
+  });
+  assert.equal(confirmed.status, 201);
+  const rows = (
+    await owner.query(
+      'SELECT id,price_usd,price_pending,version FROM products WHERE id=ANY($1::uuid[])',
+      [[a, b]],
+    )
+  ).rows;
+  assert.equal(Number(rows.find((p) => p.id === a).price_usd), 100);
+  assert.equal(rows.find((p) => p.id === a).version, 0);
+  assert.equal(rows.find((p) => p.id === b).price_pending, true);
+  assert.equal(Number((await stock(b)).quantity), 1);
+});
+
 if (process.env.RUN_BROWSER === '1')
   test('navegador: factura de compra y ajuste de salida con documento e historial', async () => {
     const browser = await chromium.launch({
@@ -812,6 +1149,25 @@ if (process.env.RUN_BROWSER === '1')
         .selectOption('16');
       await page.getByRole('button', { name: 'Guardar borrador', exact: true }).click();
       await page.getByRole('status').filter({ hasText: 'Borrador guardado' }).waitFor();
+      await page.getByRole('heading', { name: 'Márgenes de ganancia', exact: true }).waitFor();
+      await page.getByLabel('Ganancia del artículo 1').fill('30');
+      assert.match(await page.locator('.purchase-pricing-lines').innerText(), /17,19/);
+      if (process.env.SCREENSHOT_DIR)
+        await page.screenshot({
+          path: process.env.SCREENSHOT_DIR + '/margenes-compra.png',
+          fullPage: true,
+        });
+      await page.setViewportSize({ width: 390, height: 844 });
+      assert.equal(
+        await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth),
+        true,
+      );
+      await page.setViewportSize({ width: 1440, height: 1000 });
+      await page.getByRole('button', { name: 'Guardar márgenes', exact: true }).click();
+      await page
+        .getByRole('heading', { name: 'Márgenes de ganancia', exact: true })
+        .waitFor({ state: 'hidden' });
+
       assert.equal(Number((await stock(browserProduct)).quantity), 0);
       await page.getByRole('button', { name: 'Confirmar y recibir', exact: true }).click();
       await page.getByRole('status').filter({ hasText: 'Documento confirmado' }).waitFor();
@@ -993,8 +1349,15 @@ if (process.env.RUN_BROWSER === '1')
       );
       await page.setViewportSize({ width: 1440, height: 1000 });
       await submit.click();
-      await dialog.waitFor({ state: 'hidden' });
-      await page.getByRole('status').filter({ hasText: 'Factura importada en borrador' }).waitFor();
+      await page.getByRole('heading', { name: 'Márgenes de ganancia', exact: true }).waitFor();
+      await page.getByLabel('Tasa para fijar precios', { exact: true }).fill('40');
+      await page.getByLabel('Ganancia del artículo 1').fill('25');
+      await page.getByRole('button', { name: 'Guardar márgenes', exact: true }).click();
+      await page
+        .getByRole('heading', { name: 'Márgenes de ganancia', exact: true })
+        .waitFor({ state: 'hidden' });
+
+      await page.getByRole('status').filter({ hasText: 'Márgenes guardados' }).waitFor();
       const doc = (
         await request(
           '/goods/documents?branchId=' + branch + '&kind=purchase&search=BROWSER-OCR-144',
@@ -1013,6 +1376,117 @@ if (process.env.RUN_BROWSER === '1')
         true,
       );
       assert.match(await dialog.innerText(), /no coincide/);
+      assert.deepEqual(errors, []);
+    } finally {
+      await browser.close();
+    }
+  });
+
+if (process.env.RUN_BROWSER === '1')
+  test('navegador: modifica ganancias individualmente, añade IVA después y vuelve a revisar la compra', async () => {
+    const a = await product('UI-GANANCIA-IVA'),
+      b = await product('UI-GANANCIA-EXENTO');
+    const created = await request(
+      '/goods/documents',
+      purchaseInput([a, b], 'UI-MARGEN-001', {
+        lines: [
+          {
+            productId: a,
+            direction: 'entry',
+            quantity: '1',
+            unitCost: '100',
+            discountPercent: '10',
+            taxRate: '16',
+          },
+          {
+            productId: b,
+            direction: 'entry',
+            quantity: '1',
+            unitCost: '50',
+            discountPercent: '0',
+            taxRate: '0',
+          },
+        ],
+      }),
+    );
+    assert.equal(created.status, 201);
+    const browser = await chromium.launch({
+      executablePath: process.env.CHROMIUM_PATH ?? '/usr/bin/chromium',
+      headless: true,
+      args: ['--no-sandbox', '--disable-dev-shm-usage'],
+    });
+    try {
+      const page = await browser.newPage({
+        viewport: { width: 1440, height: 1000 },
+        locale: 'es-VE',
+        timezoneId: 'America/Caracas',
+      });
+      page.on('dialog', (d) => d.accept());
+      const errors: string[] = [];
+      page.on('pageerror', (e) => errors.push(e.message));
+      await page.goto(base.replace(/\/api$/, ''));
+      await page.getByLabel('Correo electrónico').fill('goods-admin@example.test');
+      await page.getByLabel('Contraseña', { exact: true }).fill(password);
+      await page.getByRole('button', { name: 'Ingresar al sistema' }).click();
+      await page.getByRole('heading', { name: 'Resumen de operaciones' }).waitFor();
+      await page.getByRole('button', { name: 'Facturas de compra', exact: true }).click();
+      await page
+        .getByRole('row')
+        .filter({ hasText: 'UI-MARGEN-001' })
+        .getByRole('button', { name: 'Abrir', exact: true })
+        .click();
+      // Confirmation without margins opens the price review rather than receiving stock.
+      await page.getByRole('button', { name: 'Confirmar y recibir', exact: true }).click();
+      await page.getByRole('heading', { name: 'Márgenes de ganancia', exact: true }).waitFor();
+      assert.equal(Number((await stock(a)).quantity), 0);
+      await page.getByLabel('Tasa para fijar precios', { exact: true }).fill('1');
+      await page.getByLabel('Ganancia inicial para todos').fill('30');
+      await page.getByRole('button', { name: 'Aplicar a todos', exact: true }).click();
+      await page.getByLabel('Ganancia del artículo 2').fill('50');
+      assert.equal(await page.getByLabel('Ganancia del artículo 1').inputValue(), '30');
+      const rows = page.locator('.purchase-pricing-lines tbody tr');
+      assert.match(await rows.nth(0).innerText(), /135,72/);
+      assert.match(await rows.nth(1).innerText(), /75,00/);
+      assert.match(await rows.nth(1).innerText(), /Exento/);
+      if (process.env.SCREENSHOT_DIR)
+        await page.screenshot({
+          path: process.env.SCREENSHOT_DIR + '/margenes-por-articulo.png',
+          fullPage: true,
+        });
+      await page.getByRole('button', { name: 'Guardar márgenes', exact: true }).click();
+      await page
+        .getByRole('heading', { name: 'Márgenes de ganancia', exact: true })
+        .waitFor({ state: 'hidden' });
+      assert.equal(Number((await stock(a)).quantity), 0);
+      await page.getByRole('button', { name: 'Márgenes de ganancia', exact: true }).click();
+      await page.getByLabel('Ganancia del artículo 1').waitFor();
+      assert.equal(await page.getByLabel('Ganancia del artículo 1').inputValue(), '30');
+      assert.equal(await page.getByLabel('Ganancia del artículo 2').inputValue(), '50');
+      await page.getByLabel('Ganancia del artículo 1').fill('35');
+      assert.match(await rows.nth(0).innerText(), /140,94/);
+      assert.equal(await page.getByLabel('Ganancia del artículo 2').inputValue(), '50');
+      await page.getByRole('button', { name: 'Guardar márgenes', exact: true }).click();
+      await page
+        .getByRole('heading', { name: 'Márgenes de ganancia', exact: true })
+        .waitFor({ state: 'hidden' });
+      await page.getByRole('button', { name: 'Confirmar y recibir', exact: true }).click();
+      await page
+        .getByRole('status')
+        .filter({ hasText: 'Existencias y precios de venta actualizados' })
+        .waitFor();
+      const q = await request('/quotes/preview', {
+        rate: '1',
+        lines: [
+          { productId: a, quantity: '1' },
+          { productId: b, quantity: '1' },
+        ],
+        payments: [],
+      });
+      assert.equal(q.body.purchaseTotalBase, '215.94');
+      assert.equal(Number((await stock(a)).quantity), 1);
+      await page.getByRole('button', { name: 'Ver márgenes', exact: true }).click();
+      await page.getByRole('heading', { name: 'Márgenes de la compra', exact: true }).waitFor();
+      assert.equal(await page.getByLabel('Ganancia del artículo 1').isDisabled(), true);
       assert.deepEqual(errors, []);
     } finally {
       await browser.close();

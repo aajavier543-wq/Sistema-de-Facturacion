@@ -5,6 +5,7 @@ import { Database } from './database';
 import { GoodsService } from './goods';
 import { goodsChecks, goodsSchema } from './goods-validation';
 import { parse, uuid } from './validation';
+import { pricingSchema } from './purchase-pricing';
 
 @Controller('goods')
 @UseGuards(TenantGuard)
@@ -104,6 +105,16 @@ export class GoodsController {
       body,
     );
     return this.goods.save(req.principal, data, null, parse(uuid, id), expectedVersion);
+  }
+  @Get('documents/:id/pricing') pricing(@Req() req: AuthRequest, @Param('id') id: string) {
+    return this.goods.pricingContext(req.principal, parse(uuid, id));
+  }
+  @Post('documents/:id/pricing') savePricing(
+    @Req() req: AuthRequest,
+    @Param('id') id: string,
+    @Body() body: unknown,
+  ) {
+    return this.goods.savePricing(req.principal, parse(uuid, id), parse(pricingSchema, body));
   }
   @Post('documents/:id/confirm') confirm(
     @Req() req: AuthRequest,
