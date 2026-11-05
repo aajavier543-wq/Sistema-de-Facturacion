@@ -6,7 +6,7 @@ services:
     plan: free
     region: oregon
     branch: main
-    autoDeploy: false
+    autoDeploy: true
     buildCommand: bash scripts/render-build.sh
     startCommand: node backend/dist/scripts/start-render.js
     healthCheckPath: /api/health/ready

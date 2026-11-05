@@ -46,15 +46,16 @@ export class InventoryService {
         [principal.tenantId, input.branchId, input.productId],
       );
       const balance = await client.query(
-        `UPDATE stock_balances SET quantity=quantity+$1::numeric,version=version+1
-        WHERE branch_id=$2 AND product_id=$3 AND quantity+$1::numeric>=0 RETURNING quantity,version`,
+        `UPDATE stock_balances SET quantity=quantity+$1::numeric,version=version+1,
+        average_cost_base=CASE WHEN $1::numeric>0 THEN NULL ELSE average_cost_base END
+        WHERE branch_id=$2 AND product_id=$3 AND quantity+$1::numeric>=0 RETURNING quantity,version,average_cost_base`,
         [input.delta, input.branchId, input.productId],
       );
       if (!balance.rowCount) throw new ConflictException('Existencia insuficiente');
       const movement = await client.query(
         `INSERT INTO stock_movements
-        (tenant_id,branch_id,product_id,delta,reason,actor_id,idempotency_key)
-        VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
+        (tenant_id,branch_id,product_id,delta,reason,actor_id,idempotency_key,unit_cost_base)
+        VALUES($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *`,
         [
           principal.tenantId,
           input.branchId,
@@ -63,6 +64,7 @@ export class InventoryService {
           input.reason,
           principal.userId,
           input.idempotencyKey,
+          new Decimal(input.delta).isNegative() ? balance.rows[0].average_cost_base : null,
         ],
       );
       await client.query(

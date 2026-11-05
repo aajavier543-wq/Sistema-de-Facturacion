@@ -5,6 +5,8 @@ import { Response } from 'express';
 import { Database } from './database';
 import { AuthService, TenantGuard } from './auth';
 import { InventoryService } from './inventory';
+import { GoodsService } from './goods';
+import { GoodsController } from './goods-controller';
 import { AuthController, BusinessController, HealthController } from './controllers';
 
 @Catch()
@@ -14,7 +16,13 @@ class ApiErrors implements ExceptionFilter {
     if (error instanceof HttpException)
       return response.status(error.getStatus()).json(error.getResponse());
     const code = (error as { code?: string })?.code;
-    if (code === '23505') return response.status(409).json({ message: 'Registro duplicado' });
+    if (code === '23505')
+      return response.status(409).json({
+        message:
+          (error as { constraint?: string }).constraint === 'purchase_invoice_unique'
+            ? 'El proveedor ya tiene una factura registrada con ese número.'
+            : 'Registro duplicado',
+      });
     if (code === '23503' || code === '23514')
       return response.status(400).json({ message: 'Referencia o valor inválido' });
     if (code === '42501') return response.status(403).json({ message: 'Operación no autorizada' });
@@ -28,12 +36,13 @@ class ApiErrors implements ExceptionFilter {
   }
 }
 @Module({
-  controllers: [HealthController, AuthController, BusinessController],
+  controllers: [HealthController, AuthController, BusinessController, GoodsController],
   providers: [
     Database,
     AuthService,
     TenantGuard,
     InventoryService,
+    GoodsService,
     { provide: APP_FILTER, useClass: ApiErrors },
   ],
 })

@@ -377,11 +377,18 @@ if (process.env.RUN_BROWSER === '1')
       row = page.getByRole('row').filter({ hasText: 'BROWSER-1' });
       await row.click();
       await page.getByRole('button', { name: 'Ajustar existencia' }).click();
-      dialog = page.getByRole('dialog');
-      await dialog.getByLabel('Cantidad a sumar o restar').fill('3');
-      await dialog.getByLabel('Motivo del ajuste').fill('Conteo inicial navegador');
-      await dialog.getByRole('button', { name: 'Registrar ajuste' }).click();
-      await dialog.waitFor({ state: 'hidden' });
+      await page
+        .getByRole('heading', { name: 'Ajustes de entrada y salida', exact: true })
+        .waitFor();
+      await page.getByLabel('Descripción', { exact: true }).fill('Conteo inicial navegador');
+      await page.getByLabel('Cantidad del renglón 1').fill('3');
+      await page.getByLabel('Costo del renglón 1').fill('10');
+      await page.getByRole('button', { name: 'Guardar borrador', exact: true }).click();
+      await page.getByRole('status').filter({ hasText: 'Borrador guardado' }).waitFor();
+      page.once('dialog', (d) => d.accept());
+      await page.getByRole('button', { name: 'Confirmar ajuste', exact: true }).click();
+      await page.getByRole('status').filter({ hasText: 'Documento confirmado' }).waitFor();
+      await page.getByRole('button', { name: 'Artículos y existencias', exact: true }).click();
       await page
         .getByRole('row')
         .filter({ hasText: 'BROWSER-1' })

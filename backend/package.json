@@ -16,7 +16,7 @@
     "bootstrap": "node dist/scripts/bootstrap.js",
     "bootstrap:local": "node scripts/bootstrap-local.mjs",
     "test": "npm run build && node --test --test-concurrency=1 dist/test/*.test.js",
-    "test:browser": "npm run build && npm --prefix ../frontend run build && RUN_BROWSER=1 node --test dist/test/integration.test.js"
+    "test:browser": "npm run build && npm --prefix ../frontend run build && RUN_BROWSER=1 node --test --test-concurrency=1 dist/test/integration.test.js dist/test/goods.test.js"
   },
   "dependencies": {
     "@nestjs/common": "^11.0.0",

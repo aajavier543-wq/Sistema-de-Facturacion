@@ -16,6 +16,14 @@ Backend NestJS/TypeScript, PostgreSQL 17 con RLS e interfaz React. Node.js 24 re
 - Historial de movimientos con búsqueda, paginación y exportación CSV de la página consultada.
 - Creación y selección de sucursales desde la interfaz.
 - Cotizador con documento imprimible, precios actualizados desde el servidor y atajo Ctrl+Enter.
+- Ajustes de entrada/salida con varios artículos, borradores y confirmación integral del inventario.
+- Facturas de compra con proveedores, control de duplicados, descuentos, IVA y recepción de mercancía.
+- Valoración por costo promedio conocido, sin inventar costos históricos ausentes.
+
+El flujo y los límites de las nuevas opciones están documentados en
+[ingreso y salida de mercancía](docs/goods-documents.md). El usuario autorizó publicar y
+desplegar las modificaciones que solicite. El Blueprint habilita el autodespliegue desde `main`
+cuando Render sincroniza esa configuración; la disponibilidad remota debe verificarse.
 
 **La vista previa es una simulación.** Usa tasa manual, no consulta el BCV, no registra ventas,
 no confirma pagos ni emite facturas fiscales. La elegibilidad del IGTF es declarada en esta pantalla;
@@ -76,6 +84,8 @@ La suite verifica RLS, permisos, contexto del pool, autenticación, auditoría, 
 competencia por la última unidad y cálculos decimales. El recorrido de navegador crea
 un artículo, edita su ficha, ajusta su existencia, consulta movimientos, exporta CSV,
 calcula pagos mixtos, comprueba la impresión y crea una sucursal en su base temporal.
+También verifica recepción por compra y salida mediante ajuste, con sus documentos,
+costos y movimientos de origen; la suite de navegador incluye ambos recorridos.
 
 ## API inicial
 
@@ -95,6 +105,10 @@ calcula pagos mixtos, comprueba la impresión y crea una sucursal en su base tem
 | GET | `/api/branches/:id/stock` | Existencias, máximo 500 filas |
 | POST | `/api/inventory/adjustments` | Ajuste con UUID de idempotencia |
 | POST | `/api/quotes/preview` | Simulación monetaria y fiscal |
+| GET / POST | `/api/goods/suppliers` | Buscar / registrar proveedores |
+| GET / POST | `/api/goods/documents` | Consultar / crear documentos de mercancía |
+| GET / PATCH | `/api/goods/documents/:id` | Consultar / editar un borrador |
+| POST | `/api/goods/documents/:id/confirm` | Confirmar ajuste o compra y actualizar stock |
 
 Salvo login y salud, enviar `Authorization: Bearer <token>` y `X-Tenant-Id: <uuid>`.
 El header selecciona una membresía ya validada; no concede acceso por sí solo.
@@ -134,7 +148,8 @@ Consulta [la arquitectura y siguientes módulos](docs/architecture.md) y
 último commit en Render; su estado operativo se verifica en el servicio remoto.
 
 La migración `002_product_editing.sql` agrega la versión de las fichas y permisos de edición.
-El arranque de Render la aplica antes de iniciar la API. Si arrancas mediante `npm start`
+`003_goods_documents.sql` agrega documentos de mercancía, proveedores y costos.
+El arranque de Render aplica las migraciones antes de iniciar la API. Si arrancas mediante `npm start`
 directamente, ejecuta primero `npm run migrate` con las credenciales administrativas.
 
 La inspección de los adjuntos FoxPro se documenta en [archivos de referencia](docs/references/legacy-files.md).

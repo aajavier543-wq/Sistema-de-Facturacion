@@ -13,6 +13,7 @@ export type Product = {
   tax_category: 'general' | 'reduced' | 'exempt';
   version: number;
   quantity?: string;
+  average_cost_base?: string | null;
 };
 export type Movement = {
   id: string;
@@ -54,7 +55,8 @@ export type Api = <T>(
   body?: unknown,
   signal?: AbortSignal,
 ) => Promise<T>;
-export type Page = 'overview' | 'articles' | 'movements' | 'quote' | 'branches';
+export type Page =
+  'overview' | 'articles' | 'movements' | 'quote' | 'branches' | 'adjustments' | 'purchases';
 export const money = (value: string | number) =>
   new Intl.NumberFormat('es-VE', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(
     Number(value),

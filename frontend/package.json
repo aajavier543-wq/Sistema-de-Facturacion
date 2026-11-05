@@ -8,6 +8,7 @@
     "build": "tsc --noEmit && vite build"
   },
   "dependencies": {
+    "decimal.js": "^10.6.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"
   },

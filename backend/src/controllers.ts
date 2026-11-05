@@ -236,7 +236,8 @@ export class BusinessController {
       ]);
       const rows = await c.query(
         `SELECT p.id,p.sku,p.barcode,p.name,p.price_usd,p.tax_category,p.version,
-        coalesce(s.quantity,0)::text AS quantity FROM products p
+        coalesce(s.quantity,0)::text AS quantity,
+        ${req.principal.role === 'admin' ? 's.average_cost_base::text' : 'NULL::text'} AS average_cost_base FROM products p
         LEFT JOIN stock_balances s ON p.tenant_id=s.tenant_id AND p.id=s.product_id AND s.branch_id=$2
         WHERE ${where} ORDER BY p.name,p.id LIMIT $3 OFFSET $4`,
         [q.search, q.branchId, q.limit, q.offset],
@@ -260,14 +261,16 @@ export class BusinessController {
       if (!(await c.query('SELECT id FROM branches WHERE id=$1', [q.branchId])).rowCount)
         throw new NotFoundException('Sucursal no disponible');
       const clause = `FROM stock_movements m JOIN products p ON p.tenant_id=m.tenant_id AND p.id=m.product_id
-        JOIN users u ON u.id=m.actor_id WHERE m.branch_id=$1
+        JOIN users u ON u.id=m.actor_id
+        LEFT JOIN inventory_documents d ON d.tenant_id=m.tenant_id AND d.id=m.document_id WHERE m.branch_id=$1
         AND (strpos(lower(p.name),lower($2))>0 OR p.sku=$2 OR strpos(lower(m.reason),lower($2))>0)`;
       const count = await c.query(`SELECT count(*)::int AS total ${clause}`, [
         q.branchId,
         q.search,
       ]);
       const rows = await c.query(
-        `SELECT m.id,m.created_at,m.delta,m.reason,p.sku,p.name,u.email AS actor
+        `SELECT m.id,m.created_at,m.delta,m.reason,p.sku,p.name,u.email AS actor,
+        m.document_id,d.kind AS document_kind,d.number AS document_number
         ${clause} ORDER BY m.created_at DESC,m.id DESC LIMIT $3 OFFSET $4`,
         [q.branchId, q.search, q.limit, q.offset],
       );

@@ -21,6 +21,7 @@ type Props = {
   onChanged: () => void;
   mode: 'articles' | 'movements';
   onQuote: (p: Product) => void;
+  onAdjust: (p: Product) => void;
 };
 export function Inventory({
   api,
@@ -32,12 +33,12 @@ export function Inventory({
   onChanged,
   mode,
   onQuote,
+  onAdjust,
 }: Props) {
   const [search, setSearch] = useState('');
   const [page, setPage] = useState(0);
   const [selected, setSelected] = useState('');
   const [editor, setEditor] = useState<Product | 'new' | null>(null);
-  const [adjustment, setAdjustment] = useState<Product | null>(null);
   const searchRef = useRef<HTMLInputElement>(null);
   const path = mode === 'articles' ? '/inventory/stock' : '/inventory/movements';
   const key = [scope, branch, revision, mode, search, page].join(':');
@@ -150,7 +151,7 @@ export function Inventory({
                 <Button
                   icon="arrows"
                   disabled={!product || !admin}
-                  onClick={() => setAdjustment(product!)}
+                  onClick={() => onAdjust(product!)}
                 >
                   Ajustar existencia
                 </Button>
@@ -325,18 +326,6 @@ export function Inventory({
           }}
         />
       )}
-      {adjustment && (
-        <AdjustmentEditor
-          api={api}
-          product={adjustment}
-          branch={branch}
-          onClose={() => setAdjustment(null)}
-          onSaved={() => {
-            setAdjustment(null);
-            onChanged();
-          }}
-        />
-      )}
     </>
   );
 }
@@ -461,101 +450,6 @@ function ProductEditor({
             <Button onClick={onClose}>Cancelar</Button>
             <Button type="submit" variant="primary" icon="check">
               {busy ? 'Guardando…' : product ? 'Guardar cambios' : 'Crear artículo'}
-            </Button>
-          </footer>
-        </fieldset>
-      </form>
-    </Dialog>
-  );
-}
-function AdjustmentEditor({
-  api,
-  product,
-  branch,
-  onClose,
-  onSaved,
-}: {
-  api: Api;
-  product: Product;
-  branch: string;
-  onClose: () => void;
-  onSaved: () => void;
-}) {
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState('');
-  const attempt = useRef<{ signature: string; id: string } | null>(null);
-  return (
-    <Dialog
-      title="Ajuste de inventario"
-      subtitle="Entrada o salida manual de mercancía"
-      onClose={onClose}
-      busy={busy}
-    >
-      <form
-        onSubmit={(e) => {
-          e.preventDefault();
-          const f = new FormData(e.currentTarget);
-          const body = {
-            branchId: branch,
-            productId: product.id,
-            delta: String(f.get('delta')).replace(',', '.'),
-            reason: f.get('reason'),
-          };
-          const signature = JSON.stringify(body);
-          if (attempt.current?.signature !== signature)
-            attempt.current = { signature, id: crypto.randomUUID() };
-          setBusy(true);
-          setError('');
-          void api('/inventory/adjustments', 'POST', {
-            ...body,
-            idempotencyKey: attempt.current.id,
-          })
-            .then(onSaved)
-            .catch((e) => setError(e.message))
-            .finally(() => setBusy(false));
-        }}
-      >
-        <fieldset disabled={busy}>
-          <div className="form-content">
-            <Feedback error={error} />
-            <div className="record-callout">
-              <Icon name="box" size={26} />
-              <div>
-                <strong>{product.name}</strong>
-                <small>
-                  {product.sku} · Existencia consultada: {quantity(product.quantity ?? '0')}
-                </small>
-              </div>
-            </div>
-            <label>
-              Cantidad a sumar o restar
-              <input
-                name="delta"
-                autoFocus
-                required
-                inputMode="decimal"
-                placeholder="10 para una entrada, -2 para una salida"
-              />
-            </label>
-            <label>
-              Motivo del ajuste
-              <textarea
-                name="reason"
-                required
-                minLength={5}
-                maxLength={250}
-                rows={3}
-                placeholder="Describe la recepción, corrección de conteo o salida de mercancía…"
-              />
-            </label>
-            <p className="form-hint">
-              El movimiento queda auditado. No se permiten saldos negativos.
-            </p>
-          </div>
-          <footer className="dialog-footer">
-            <Button onClick={onClose}>Cancelar</Button>
-            <Button type="submit" variant="primary" icon="check">
-              {busy ? 'Registrando…' : 'Registrar ajuste'}
             </Button>
           </footer>
         </fieldset>

@@ -5,8 +5,12 @@ import { Branches } from './pages/Branches';
 import { Inventory } from './pages/Inventory';
 import { Overview } from './pages/Overview';
 import { Quotation } from './pages/Quotation';
+import { GoodsDocuments } from './pages/GoodsDocuments';
 import type { Branch, Page, Product, Session } from './types';
-const navigation = [
+const navigation: {
+  section: string;
+  items: { id: Page; label: string; icon: string; adminOnly?: boolean }[];
+}[] = [
   {
     section: 'GENERAL',
     items: [{ id: 'overview' as Page, label: 'Resumen de operaciones', icon: 'grid' }],
@@ -16,7 +20,12 @@ const navigation = [
     items: [
       { id: 'articles' as Page, label: 'Artículos y existencias', icon: 'box' },
       { id: 'movements' as Page, label: 'Movimientos', icon: 'arrows' },
+      { id: 'adjustments', label: 'Ajustes de entrada y salida', icon: 'arrows', adminOnly: true },
     ],
+  },
+  {
+    section: 'COMPRAS',
+    items: [{ id: 'purchases', label: 'Facturas de compra', icon: 'file', adminOnly: true }],
   },
   { section: 'COMERCIAL', items: [{ id: 'quote' as Page, label: 'Cotizaciones', icon: 'file' }] },
   {
@@ -30,6 +39,8 @@ const titles: Record<Page, string> = {
   movements: 'Movimientos de inventario',
   quote: 'Cotizaciones',
   branches: 'Sucursales',
+  adjustments: 'Ajustes de entrada y salida',
+  purchases: 'Facturas de compra',
 };
 export default function App() {
   const [session, setSession] = useState<Session | null>(null);
@@ -43,14 +54,19 @@ export default function App() {
   const [loggingOut, setLoggingOut] = useState(false);
   const [documentBusy, setDocumentBusy] = useState(false);
   const [pending, setPending] = useState<{ product: Product; event: string } | null>(null);
-  const documentDirty = useRef(false);
+  const [adjustmentPending, setAdjustmentPending] = useState<{
+    product: Product;
+    event: string;
+  } | null>(null);
+  const documentDirty = useRef({ quote: false, adjustments: false, purchases: false });
   const api = useMemo(
     () =>
       makeApi(session, tenant, () => {
         setSession(null);
         setBranch('');
         setPending(null);
-        documentDirty.current = false;
+        setAdjustmentPending(null);
+        documentDirty.current = { quote: false, adjustments: false, purchases: false };
         setError('La sesión venció. Ingresa nuevamente.');
       }),
     [session, tenant],
@@ -77,9 +93,9 @@ export default function App() {
   const admin = company?.role === 'admin';
   function mayDiscard() {
     return (
-      !documentDirty.current ||
+      !Object.values(documentDirty.current).some(Boolean) ||
       window.confirm(
-        'Al cambiar el ámbito de trabajo se descartará la cotización en preparación. ¿Deseas continuar?',
+        'Al cambiar el ámbito de trabajo se descartarán los cambios de documentos sin guardar y las cotizaciones en preparación. ¿Deseas continuar?',
       )
     );
   }
@@ -98,8 +114,9 @@ export default function App() {
           setBranchRevision(0);
           setPage('overview');
           setPending(null);
+          setAdjustmentPending(null);
           setRate('');
-          documentDirty.current = false;
+          documentDirty.current = { quote: false, adjustments: false, purchases: false };
         }}
       />
     );
@@ -128,23 +145,27 @@ export default function App() {
           </div>
         </div>
         <nav aria-label="Módulos">
-          {navigation.map((group) => (
-            <div className="nav-group" key={group.section}>
-              <span>{group.section}</span>
-              {group.items.map((item) => (
-                <button
-                  key={item.id}
-                  className={page === item.id ? 'nav-item active' : 'nav-item'}
-                  aria-current={page === item.id ? 'page' : undefined}
-                  onClick={() => setPage(item.id)}
-                >
-                  <Icon name={item.icon} />
-                  <span>{item.label}</span>
-                  {page === item.id && <span className="nav-indicator" />}
-                </button>
-              ))}
-            </div>
-          ))}
+          {navigation
+            .filter((group) => group.items.some((item) => !item.adminOnly || admin))
+            .map((group) => (
+              <div className="nav-group" key={group.section}>
+                <span>{group.section}</span>
+                {group.items
+                  .filter((item) => !item.adminOnly || admin)
+                  .map((item) => (
+                    <button
+                      key={item.id}
+                      className={page === item.id ? 'nav-item active' : 'nav-item'}
+                      aria-current={page === item.id ? 'page' : undefined}
+                      onClick={() => setPage(item.id)}
+                    >
+                      <Icon name={item.icon} />
+                      <span>{item.label}</span>
+                      {page === item.id && <span className="nav-indicator" />}
+                    </button>
+                  ))}
+              </div>
+            ))}
         </nav>
         <div className="sidebar-footer">
           <span className="sidebar-user">
@@ -165,7 +186,8 @@ export default function App() {
                 .then(() => {
                   setSession(null);
                   setPending(null);
-                  documentDirty.current = false;
+                  setAdjustmentPending(null);
+                  documentDirty.current = { quote: false, adjustments: false, purchases: false };
                 })
                 .catch((e) => setError(e.message))
                 .finally(() => setLoggingOut(false));
@@ -207,8 +229,9 @@ export default function App() {
                 setBranch('');
                 setBranchRevision(0);
                 setPending(null);
+                setAdjustmentPending(null);
                 setRate('');
-                documentDirty.current = false;
+                documentDirty.current = { quote: false, adjustments: false, purchases: false };
               }}
             >
               {session.tenants.map((t) => (
@@ -227,7 +250,8 @@ export default function App() {
                 if (!mayDiscard()) return;
                 setBranch(e.target.value);
                 setPending(null);
-                documentDirty.current = false;
+                setAdjustmentPending(null);
+                documentDirty.current = { quote: false, adjustments: false, purchases: false };
               }}
             >
               {branches.map((b) => (
@@ -282,6 +306,10 @@ export default function App() {
                   revision={revision}
                   onChanged={refresh}
                   mode={page}
+                  onAdjust={(product) => {
+                    setAdjustmentPending({ product, event: crypto.randomUUID() });
+                    setPage('adjustments');
+                  }}
                   onQuote={(product) => {
                     setPending({ product, event: crypto.randomUUID() });
                     setPage('quote');
@@ -302,13 +330,42 @@ export default function App() {
                     if (mayDiscard()) {
                       setBranch(id);
                       setPending(null);
-                      documentDirty.current = false;
+                      setAdjustmentPending(null);
+                      documentDirty.current = {
+                        quote: false,
+                        adjustments: false,
+                        purchases: false,
+                      };
                     }
                   }}
                 />
               )}
             </>
           )}
+          {admin &&
+            (['adjustment', 'purchase'] as const).map((kind) => (
+              <GoodsDocuments
+                key={scope + kind}
+                api={api}
+                scope={scope}
+                branch={activeBranch}
+                kind={kind}
+                visible={
+                  page === (kind === 'adjustment' ? 'adjustments' : 'purchases') && !loadingBranches
+                }
+                admin={admin}
+                rate={rate}
+                revision={revision}
+                onChanged={refresh}
+                onDirty={(dirty) => {
+                  documentDirty.current[kind === 'adjustment' ? 'adjustments' : 'purchases'] =
+                    dirty;
+                }}
+                onBusy={setDocumentBusy}
+                pending={kind === 'adjustment' ? adjustmentPending : null}
+                onConsumed={() => setAdjustmentPending(null)}
+              />
+            ))}
           <Quotation
             key={scope}
             api={api}
@@ -320,7 +377,7 @@ export default function App() {
             pending={pending}
             onConsumed={() => setPending(null)}
             onDirty={(dirty) => {
-              documentDirty.current = dirty;
+              documentDirty.current.quote = dirty;
             }}
             onBusy={setDocumentBusy}
             revision={revision}

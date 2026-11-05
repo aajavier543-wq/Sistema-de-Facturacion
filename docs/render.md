@@ -46,8 +46,11 @@ Para producción, usa el flujo de tarea de migración separada descrito debajo.
 
 Una vez que Render asigne la URL, comprobar `/api/health/ready`, iniciar sesión, crear un
 producto, ajustar existencias y calcular una cotización. Un build exitoso no confirma por sí
-solo que el servicio remoto funciona. El Blueprint mantiene el autodespliegue desactivado;
-los siguientes cambios requieren un despliegue manual.
+solo que el servicio remoto funciona. El usuario autorizó publicar y desplegar las modificaciones
+que solicite; el Blueprint habilita el autodespliegue desde `main` para este flujo de trabajo.
+En un Blueprint ya existente, la configuración activa debe sincronizarse para aplicar este cambio.
+Guardar o subir `render.yaml` no confirma por sí solo que Render lo haya aplicado.
+Mientras no se confirme la sincronización, se puede solicitar un deploy manual del commit exacto.
 
 Si el Blueprint ya falló por el límite de una base gratuita, abre su pantalla **Syncs** y pulsa
 **Manual sync** después de publicar esta corrección en `main`. La referencia `fromDatabase`
