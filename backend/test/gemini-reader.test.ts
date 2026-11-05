@@ -351,3 +351,77 @@ test('los resultados repetibles caducan y los errores permiten un nuevo intento'
     await reader.shutdown();
   }
 });
+
+test('diagnóstico con Google consulta el modelo sin generar contenido ni enviar imágenes o claves en el cuerpo', async () => {
+  let calls = 0;
+  const reader = new GeminiInvoiceReader((async (url, init) => {
+    calls++;
+    assert.equal(
+      url,
+      'https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest',
+    );
+    assert.equal(init!.method, 'GET');
+    assert.equal(init!.body, undefined);
+    assert.equal(init!.redirect, 'error');
+    assert.equal((init!.headers as Record<string, string>)['x-goog-api-key'], fakeKey);
+    return Response.json({
+      name: 'models/gemini-flash-latest',
+      supportedGenerationMethods: ['generateContent'],
+    });
+  }) as typeof fetch);
+  const result = await reader.checkConnection();
+  assert.equal(result.available, true);
+  assert.equal(result.model, 'gemini-flash-latest');
+  assert.equal(calls, 1);
+  assert.equal(JSON.stringify(result).includes(fakeKey), false);
+});
+test('comprobación sin clave, modelo incompatible, clave inválida, desconexión y tiempo límite fallan con un motivo seguro', async () => {
+  delete process.env.GEMINI_API_KEY;
+  const missing = new GeminiInvoiceReader((async () => {
+    throw new Error('No debe conectar');
+  }) as typeof fetch);
+  try {
+    await assert.rejects(missing.checkConnection(), code('GEMINI_NOT_CONFIGURED'));
+  } finally {
+    process.env.GEMINI_API_KEY = fakeKey;
+  }
+  const unsupported = new GeminiInvoiceReader((async () =>
+    Response.json({ supportedGenerationMethods: ['countTokens'] })) as typeof fetch);
+  await assert.rejects(unsupported.checkConnection(), code('GEMINI_MODEL_UNAVAILABLE'));
+  const invalid = new GeminiInvoiceReader((async () =>
+    Response.json(
+      {
+        error: {
+          message: 'API key not valid. Please pass a valid API key.',
+          details: [
+            { '@type': 'type.googleapis.com/google.rpc.ErrorInfo', reason: 'API_KEY_INVALID' },
+          ],
+        },
+      },
+      { status: 400 },
+    )) as typeof fetch);
+  await assert.rejects(invalid.checkConnection(), code('GEMINI_INVALID_KEY'));
+  const network = new GeminiInvoiceReader((async () => {
+    throw new Error('secret ' + fakeKey);
+  }) as typeof fetch);
+  await assert.rejects(network.checkConnection(), code('GEMINI_NETWORK'));
+  class FastCheck extends GeminiInvoiceReader {
+    protected override checkTimeoutMs() {
+      return 30;
+    }
+  }
+  const stalled = new FastCheck((async () => new Promise<Response>(() => {})) as typeof fetch);
+  await assert.rejects(stalled.checkConnection(), code('GEMINI_CHECK_TIMEOUT'));
+  const controller = new AbortController();
+  const pending = assert.rejects(stalled.checkConnection(controller.signal), code('OCR_CANCELLED'));
+  controller.abort();
+  await pending;
+});
+test('leer una factura conserva el motivo API_KEY_INVALID aunque Google responda 400', async () => {
+  const reader = new GeminiInvoiceReader((async () =>
+    Response.json(
+      { error: { message: 'API key not valid. Please pass a valid API key.' } },
+      { status: 400 },
+    )) as typeof fetch);
+  await assert.rejects(reader.recognize(file(), options), code('GEMINI_INVALID_KEY'));
+});

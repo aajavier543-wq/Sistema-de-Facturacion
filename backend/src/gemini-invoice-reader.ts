@@ -4,6 +4,7 @@ import sharp from 'sharp';
 import type { Principal } from './database';
 import type { OcrOptions } from './ocr-options';
 import type { OcrResult } from './invoice-ocr';
+import { boundedGoogleJson, googleFailure } from './gemini-errors';
 import {
   documentVisionInstruction,
   geminiDocumentSchema,
@@ -92,6 +93,93 @@ export class GeminiInvoiceReader {
       external: true,
       waitSeconds: Math.ceil(this.timeoutMs() / 1000),
     };
+  }
+  protected checkTimeoutMs() {
+    return 15_000;
+  }
+  async checkConnection(signal?: AbortSignal) {
+    const { key, model, validModel } = this.config();
+    if (!key)
+      throw failure(
+        'GEMINI_NOT_CONFIGURED',
+        'Falta configurar GEMINI_API_KEY en Render. Guarda los cambios de entorno y despliega.',
+      );
+    if (!validModel)
+      throw failure('GEMINI_MODEL_INVALID', 'La configuración de GEMINI_MODEL no es válida.');
+    if (signal?.aborted) throw cancelled();
+    const controller = new AbortController();
+    let rejectStopped!: (reason: HttpException) => void;
+    let reason: HttpException | undefined;
+    const stopped = new Promise<never>((_, reject) => {
+      rejectStopped = reject;
+    });
+    const stop = (error: HttpException) => {
+      if (reason) return;
+      reason = error;
+      controller.abort();
+      rejectStopped(error);
+    };
+    const onAbort = () => stop(cancelled());
+    const timer = setTimeout(
+      () =>
+        stop(
+          failure(
+            'GEMINI_CHECK_TIMEOUT',
+            'La comprobación con Google superó el tiempo límite. Revisa la conexión del servidor e inténtalo de nuevo.',
+            504,
+          ),
+        ),
+      this.checkTimeoutMs(),
+    );
+    signal?.addEventListener('abort', onAbort, { once: true });
+    const check = async () => {
+      try {
+        if (signal?.aborted) onAbort();
+        if (reason) throw reason;
+        const response = await this.fetcher(
+          'https://generativelanguage.googleapis.com/v1beta/models/' + encodeURIComponent(model),
+          {
+            method: 'GET',
+            redirect: 'error',
+            signal: controller.signal,
+            headers: { 'x-goog-api-key': key, accept: 'application/json' },
+          },
+        );
+        if (reason) throw reason;
+        if (!response.ok) throw await googleFailure(response);
+        const data = (await boundedGoogleJson(response)) as any;
+        if (reason) throw reason;
+        if (
+          !Array.isArray(data?.supportedGenerationMethods) ||
+          !data.supportedGenerationMethods.includes('generateContent')
+        )
+          throw failure(
+            'GEMINI_MODEL_UNAVAILABLE',
+            'Google respondió, pero el modelo no admite generateContent. Revisa GEMINI_MODEL.',
+          );
+        return {
+          provider: 'gemini',
+          model,
+          available: true,
+          checkedAt: new Date().toISOString(),
+          message:
+            'Google aceptó la clave y confirmó el acceso al modelo. La lectura de imágenes y su cuota se comprobarán al importar.',
+        };
+      } catch (error) {
+        if (reason) throw reason;
+        if (error instanceof HttpException) throw error;
+        throw failure(
+          'GEMINI_NETWORK',
+          'El servidor no pudo conectarse con Google. Revisa la conexión y vuelve a comprobar.',
+        );
+      }
+    };
+    try {
+      return await Promise.race([check(), stopped]);
+    } finally {
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', onAbort);
+    }
   }
   async recognize(
     file: { buffer: Buffer; mimetype: string; size: number },
@@ -239,29 +327,7 @@ export class GeminiInvoiceReader {
           },
         );
         active();
-        if (!response.ok) {
-          await response.body?.cancel().catch(() => {});
-          if (response.status === 429)
-            throw failure(
-              'GEMINI_QUOTA',
-              'Gemini alcanzó la cuota disponible de tu cuenta. Espera a que se restablezca el cupo y vuelve a intentarlo; no se habilitó ningún plan de pago.',
-              429,
-            );
-          if (response.status === 401 || response.status === 403)
-            throw failure(
-              'GEMINI_AUTH',
-              'La clave de Gemini no tiene acceso. Revisa la clave y el proyecto en Google AI Studio.',
-            );
-          if (response.status === 404)
-            throw failure(
-              'GEMINI_MODEL_UNAVAILABLE',
-              'El modelo configurado no está disponible para esta cuenta. Revisa GEMINI_MODEL.',
-            );
-          throw failure(
-            'GEMINI_UNAVAILABLE',
-            'Gemini no pudo procesar la solicitud. Vuelve a intentarlo más tarde.',
-          );
-        }
+        if (!response.ok) throw await googleFailure(response);
         const reader = response.body?.getReader();
         if (!reader)
           throw failure('GEMINI_INVALID_RESPONSE', 'Gemini devolvió una respuesta vacía.');

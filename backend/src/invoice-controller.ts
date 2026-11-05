@@ -35,6 +35,22 @@ export class InvoiceImageController {
     requireAdmin(req.principal);
     return this.ocr.status();
   }
+  @Post('check')
+  @HttpCode(200)
+  async check(@Req() req: AuthRequest, @Res({ passthrough: true }) res: Response) {
+    requireAdmin(req.principal);
+    const controller = new AbortController();
+    const disconnect = () => {
+      if (!res.writableEnded) controller.abort();
+    };
+    res.once('close', disconnect);
+    if (req.aborted || res.destroyed) controller.abort();
+    try {
+      return await this.ocr.checkConnection(controller.signal);
+    } finally {
+      res.removeListener('close', disconnect);
+    }
+  }
   @Post('read')
   @UseInterceptors(
     FileInterceptor('image', { limits: { fileSize: 8 * 1024 * 1024, files: 1, fields: 2 } }),

@@ -63,6 +63,13 @@ export class InvoiceOcr implements OnModuleDestroy {
       waitSeconds: 60,
     };
   }
+  async checkConnection(signal?: AbortSignal) {
+    if (this.readerMode() !== 'gemini')
+      throw new BadRequestException(
+        'La comprobación de Google requiere seleccionar Gemini como lector.',
+      );
+    return this.gemini.checkConnection(signal);
+  }
   protected deadlineMs(detailed: boolean): number {
     return detailed ? 90_000 : 60_000;
   }

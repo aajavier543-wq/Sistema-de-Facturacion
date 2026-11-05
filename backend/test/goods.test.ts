@@ -1819,18 +1819,24 @@ if (process.env.RUN_BROWSER === '1')
       await page.getByRole('button', { name: 'Importar imagen de factura', exact: true }).click();
       const dialog = page.getByRole('dialog');
       await dialog.getByText(/Gemini aún no está conectado/).waitFor();
-      await dialog
-        .getByLabel('Imagen de factura')
-        .setInputFiles({
-          name: 'gemini-pendiente.png',
-          mimeType: 'image/png',
-          buffer: await invoiceImage(),
-        });
+      await dialog.getByLabel('Imagen de factura').setInputFiles({
+        name: 'gemini-pendiente.png',
+        mimeType: 'image/png',
+        buffer: await invoiceImage(),
+      });
       assert.equal(
         await dialog.getByRole('button', { name: 'Leer imagen y preparar factura' }).isDisabled(),
         true,
       );
       assert.equal((await request('/goods/invoice-images/status')).body.configured, false);
+      assert.equal(
+        (await request('/goods/invoice-images/check', {}, 'POST')).body.code,
+        'GEMINI_NOT_CONFIGURED',
+      );
+      assert.equal(
+        (await request('/goods/invoice-images/check', {}, 'POST', cashierToken)).status,
+        403,
+      );
       assert.equal(
         (await request('/goods/invoice-images/status', undefined, 'GET', cashierToken)).status,
         403,
@@ -1894,14 +1900,36 @@ if (process.env.RUN_BROWSER === '1')
       await page.getByRole('button', { name: 'Importar imagen de factura', exact: true }).click();
       const dialog = page.getByRole('dialog');
       await dialog.getByText('Gemini con visión', { exact: true }).waitFor();
-      assert.equal(await dialog.getByLabel('Lectura detallada para fotos difíciles').count(), 0);
-      await dialog
-        .getByLabel('Imagen de factura')
-        .setInputFiles({
-          name: 'gemini-nota.png',
-          mimeType: 'image/png',
-          buffer: await deliveryImage(),
+      let checks = 0;
+      await page.route('**/api/goods/invoice-images/check', (route) => {
+        checks++;
+        return route.fulfill({
+          status: checks === 1 ? 503 : 200,
+          contentType: 'application/json',
+          body: JSON.stringify(
+            checks === 1
+              ? {
+                  code: 'GEMINI_INVALID_KEY',
+                  message: 'Google rechazó la clave de API (Google HTTP 400; GEMINI_INVALID_KEY).',
+                }
+              : {
+                  available: true,
+                  message: 'Google aceptó la clave y confirmó el acceso al modelo.',
+                },
+          ),
         });
+      });
+      await dialog.getByRole('button', { name: 'Comprobar conexión', exact: true }).click();
+      await dialog.getByRole('alert').filter({ hasText: 'GEMINI_INVALID_KEY' }).waitFor();
+      await dialog.getByRole('button', { name: 'Comprobar conexión', exact: true }).click();
+      await dialog.getByRole('status').filter({ hasText: 'Google aceptó la clave' }).waitFor();
+      assert.equal(checks, 2);
+      assert.equal(await dialog.getByLabel('Lectura detallada para fotos difíciles').count(), 0);
+      await dialog.getByLabel('Imagen de factura').setInputFiles({
+        name: 'gemini-nota.png',
+        mimeType: 'image/png',
+        buffer: await deliveryImage(),
+      });
       await dialog.getByRole('button', { name: 'Leer imagen y preparar factura' }).click();
       await dialog.getByText('Gemini · Revisión requerida', { exact: true }).waitFor();
       assert.equal(await dialog.getByLabel('Cantidad importada 1').inputValue(), '2000');

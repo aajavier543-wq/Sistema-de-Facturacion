@@ -124,6 +124,8 @@ export function InvoiceImageImport({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
+  const [checking, setChecking] = useState(false);
+  const checkOperation = useRef<AbortController | null>(null);
   const [isReading, setIsReading] = useState(false),
     [cancelling, setCancelling] = useState(false),
     [elapsed, setElapsed] = useState(0);
@@ -137,6 +139,8 @@ export function InvoiceImageImport({
   }, [isReading]);
   useEffect(
     () => () => {
+      checkOperation.current?.abort();
+      checkOperation.current = null;
       const op = readOperation.current;
       if (op) {
         readOperation.current = null;
@@ -264,8 +268,39 @@ export function InvoiceImageImport({
     setReviewed(false);
     setError('');
   }
+  async function checkConnection() {
+    if (checkOperation.current || busy) return;
+    const controller = new AbortController();
+    checkOperation.current = controller;
+    const timer = setTimeout(() => controller.abort(), 20000);
+    setChecking(true);
+    setError('');
+    setNotice('');
+    try {
+      const result = await api<{ message: string }>(
+        '/goods/invoice-images/check',
+        'POST',
+        {},
+        controller.signal,
+      );
+      if (checkOperation.current === controller) setNotice(result.message);
+    } catch (error) {
+      if (checkOperation.current === controller)
+        setError(
+          controller.signal.aborted
+            ? 'La comprobación agotó su tiempo de espera. Puedes volver a intentarlo.'
+            : (error as Error).message,
+        );
+    } finally {
+      clearTimeout(timer);
+      if (checkOperation.current === controller) {
+        checkOperation.current = null;
+        setChecking(false);
+      }
+    }
+  }
   async function read() {
-    if (readOperation.current || busy) return;
+    if (readOperation.current || busy || checking) return;
     if (!reader.data?.configured) {
       setError(
         'El lector aún no está conectado. El administrador debe configurar la cuenta de Gemini.',
@@ -452,6 +487,17 @@ export function InvoiceImageImport({
             </span>
           </div>
         )}
+        {externalReader && (
+          <div className="invoice-reader-label">
+            <Button
+              onClick={() => void checkConnection()}
+              disabled={checking || busy || !reader.data?.configured}
+            >
+              {checking ? 'Comprobando conexión…' : 'Comprobar conexión'}
+            </Button>
+            <span>Comprueba el acceso a Google sin enviar la fotografía ni generar contenido.</span>
+          </div>
+        )}
         {isReading && (
           <div className="ocr-progress">
             <div role="status" aria-live="polite">
@@ -538,7 +584,7 @@ export function InvoiceImageImport({
                   variant="primary"
                   icon="search"
                   onClick={() => void read()}
-                  disabled={busy || !file || !reader.data?.configured || reader.loading}
+                  disabled={busy || checking || !file || !reader.data?.configured || reader.loading}
                 >
                   {busy ? 'Leyendo imagen…' : 'Leer imagen y preparar factura'}
                 </Button>

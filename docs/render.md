@@ -77,6 +77,12 @@ como informa la pantalla. Nunca uses una variable `VITE_*` ni compartas la clave
 El proceso HTTP conserva la clave Gemini, pero sigue excluyendo las credenciales
 administrativas de base de datos, bootstrap y Render.
 
+Después del despliegue, abre **Importar imagen de factura → Comprobar conexión**.
+Consulta los metadatos del modelo desde Render sin enviar una fotografía ni generar contenido.
+Si Google rechaza la clave con HTTP 400, la aplicación muestra `GEMINI_INVALID_KEY`;
+si reporta exposición, `GEMINI_KEY_EXPOSED`. También distingue restricciones, API deshabilitada,
+modelo, región y formato. Comparte solo el código y HTTP; nunca la clave o respuestas crudas.
+Una comprobación correcta no garantiza la cuota o la aceptación de la próxima lectura.
 Consulta [facturas desde imágenes](invoice-images.md) para límites y revisión.
 
 ### Diagnóstico de arranque

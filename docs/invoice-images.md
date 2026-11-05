@@ -40,6 +40,41 @@ modelo y presencia de configuración; no prueba la validez de la clave ni consum
 Sin clave, se muestra el aviso de configuración y se desactiva el botón de lectura.
 El resto de las compras manuales sigue disponible.
 
+### Comprobar conexión y diagnosticar errores
+
+En la ventana de importación, **Comprobar conexión** consulta los metadatos del modelo
+configurado mediante `POST /api/goods/invoice-images/check` (solo administrador).
+El servidor hace un GET al endpoint oficial de Google, sin enviar la fotografía ni generar
+contenido. El plazo del servidor es de 15 segundos y el del navegador, 20. Cerrar la ventana
+cancela la comprobación. No modifica facturas, inventario, claves, modelos ni facturación.
+Una respuesta correcta confirma el acceso a los metadatos del modelo y que anuncia
+`generateContent`; no garantiza cuota disponible ni aceptación de la imagen o del esquema
+estructurado en la siguiente lectura.
+
+Las lecturas y comprobaciones clasifican los errores JSON de Google con un límite de
+64 KiB. Se muestran únicamente mensajes estáticos, el estado HTTP del proveedor y un
+código de referencia. Nunca se imprime ni devuelve el mensaje original, la clave,
+metadatos de proyectos ni texto de la factura. Una clave rechazada puede llegar como HTTP
+400; ya no se confunde ese caso con una caída temporal de Google.
+
+| Referencia | Qué revisar |
+|---|---|
+| `GEMINI_INVALID_KEY` | Clave válida de AI Studio en `GEMINI_API_KEY`, guardar/desplegar en Render. |
+| `GEMINI_KEY_EXPOSED` | Google indicó exposición: revocar la clave y reemplazarla de forma privada. |
+| `GEMINI_KEY_RESTRICTED` | Restricciones de API y aplicación compatibles con llamadas desde el servidor Render. |
+| `GEMINI_API_DISABLED` | Generative Language API habilitada en el proyecto de la clave. |
+| `GEMINI_REGION_UNAVAILABLE` | Regiones admitidas por Google y ubicación del servidor. |
+| `GEMINI_FREE_TIER_UNAVAILABLE` / `GEMINI_PROJECT_UNAVAILABLE` | Disponibilidad de cupo gratuito y estado del proyecto; la aplicación no activa facturación. |
+| `GEMINI_MODEL_UNAVAILABLE` | Modelo con imágenes y salida estructurada disponible para el proyecto. |
+| `GEMINI_QUOTA` | Cuotas o límites del proyecto en AI Studio; no hay reintento automático. |
+| `GEMINI_REQUEST_FORMAT` | Integración y parámetros enviados: requiere revisión de código, no otra fotografía. |
+| `GEMINI_BAD_REQUEST` | Google rechazó la petición sin un motivo reconocido; compartir solo la referencia y el HTTP. |
+| `GEMINI_NETWORK` / `GEMINI_CHECK_TIMEOUT` | Conexión del servidor con Google y tiempo de respuesta. |
+
+Sin acceso autorizado al servicio remoto no se puede establecer cuál de estos motivos
+causó un aviso genérico mostrado por una versión anterior. Las verificaciones locales
+utilizan respuestas simuladas y no certifican el acceso de la clave configurada en Render.
+
 ## Lectura, límites y revisión
 
 El servidor valida los bytes y dimensiones, aplica giro/recorte y prepara un JPEG de hasta

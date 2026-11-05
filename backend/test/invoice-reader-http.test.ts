@@ -19,7 +19,9 @@ test('HTTP multipart Gemini: envío, repetición concurrente y reenvío de respu
   process.env.GEMINI_API_KEY = 'fake-http-key-never-real';
   process.env.INVOICE_READER_PROVIDER = 'gemini';
   let calls = 0;
-  globalThis.fetch = (async () => {
+  globalThis.fetch = (async (_url, init) => {
+    if (init?.method === 'GET')
+      return Response.json({ supportedGenerationMethods: ['generateContent'] });
     calls++;
     await new Promise((resolve) => setTimeout(resolve, 100));
     return new Response(
@@ -70,6 +72,12 @@ test('HTTP multipart Gemini: envío, repetición concurrente y reenvío de respu
       form.append('requestId', id);
       return nativeFetch(url, { method: 'POST', body: form });
     };
+    const check = await nativeFetch((await app.getUrl()) + '/goods/invoice-images/check', {
+      method: 'POST',
+    });
+    assert.equal(check.status, 200);
+    assert.equal(((await check.json()) as any).available, true);
+    assert.equal(calls, 0, 'la comprobación no debe generar contenido');
     const result = await send(randomUUID());
     const body = (await result.json()) as any;
     assert.equal(result.status, 201, JSON.stringify(body));
