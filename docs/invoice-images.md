@@ -58,6 +58,16 @@ y libera el registro de la operación; no se espera indefinidamente al proveedor
 Empresa, usuario e identificador deben coincidir para cancelar. El navegador limita su espera
 a 110 segundos y conserva la imagen para reintentar sin volver a seleccionarla.
 
+Si se repite un envío con el mismo identificador, empresa, usuario, imagen y opciones,
+el servidor comparte la lectura en curso en lugar de responder «Esta lectura ya está en
+curso». Tampoco consume otro espacio ni realiza otra consulta a Google. Tras completarse,
+el resultado puede recuperarse durante 60 segundos (máximo 16 resultados en memoria por
+instancia); no se conserva la fotografía. Reutilizar el identificador con otra imagen u
+opciones se rechaza. Usuarios y empresas no comparten resultados. Si uno de los transportes
+repetidos se desconecta, el otro puede seguir esperando; la cancelación explícita del intento
+los detiene a todos. Los errores no se guardan en esta caché. Estos reenvíos se coordinan
+por instancia, sin persistencia ni coordinación entre varias réplicas.
+
 Antes de leer puedes **Girar 90°** o arrastrar sobre la vista previa para seleccionar el papel
 y excluir pantalla, mesa o bordes. El recorte se calcula después del giro; el hash identifica
 el archivo original. La fotografía pequeña o borrosa no recupera detalle por usar visión.
@@ -184,6 +194,7 @@ ni reemplaza una revisión de los datos del proveedor.
 
 La integración Gemini se verifica con respuestas simuladas: esquema, claves ausentes,
 errores de acceso/cuota/modelo, cancelación, plazo, concurrencia, importes netos/brutos y
-flujo de navegador hasta el borrador y sus márgenes. Estas pruebas no envían fotografías a
+flujo de navegador hasta el borrador y sus márgenes. Una prueba HTTP multipart adicional
+comprueba envíos repetidos simultáneos, recuperación de resultados y conflicto de opciones. Estas pruebas no envían fotografías a
 Google. Para comprobar la precisión sobre las fotografías originales se necesita configurar
 una clave válida y ejecutar una lectura real en el servicio desplegado.

@@ -1630,6 +1630,16 @@ if (process.env.RUN_BROWSER === '1')
       await dialog.getByRole('button', { name: 'Girar 90°', exact: true }).click();
       const frame = dialog.locator('.ocr-crop-frame');
       await frame.waitFor();
+      // Rotation prepares the preview asynchronously; drag only after the final
+      // unrotated image has decoded and its dimensions are stable.
+      await frame.locator('img').evaluate(async (img: HTMLImageElement) => {
+        await img.decode();
+      });
+      await page.waitForFunction(() => {
+        const img = document.querySelector('.ocr-crop-frame img') as HTMLImageElement | null;
+        return img?.src.startsWith('blob:') && img.complete && img.naturalWidth === 1720;
+      });
+      await frame.scrollIntoViewIfNeeded();
       const box = await frame.boundingBox();
       assert.ok(box);
       await page.mouse.move(box.x + 2, box.y + 2);

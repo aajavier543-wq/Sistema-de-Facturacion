@@ -11,7 +11,15 @@ import {
   normalizeGeminiDocument,
 } from './gemini-document';
 type Context = { principal?: Principal; requestId?: string; signal?: AbortSignal };
-type Task = { principal?: Principal; stop: (error: HttpException) => void; done: Promise<void> };
+type Task = {
+  fingerprint: string;
+  stop: (error: HttpException) => void;
+  done: Promise<void>;
+  result: Promise<OcrResult>;
+  waiters: number;
+  settled: boolean;
+};
+type Completed = { fingerprint: string; result: OcrResult; timer: ReturnType<typeof setTimeout> };
 const failure = (code: string, message: string, status = 503) =>
   new HttpException({ code, message }, status);
 const cancelled = () =>
@@ -24,6 +32,47 @@ const timeout = () =>
   );
 export class GeminiInvoiceReader {
   private tasks = new Map<string, Task>();
+  private completed = new Map<string, Completed>();
+  private taskKey(principal: Principal | undefined, id: string) {
+    return JSON.stringify([principal?.tenantId ?? null, principal?.userId ?? null, id]);
+  }
+  protected resultTtlMs() {
+    return 60_000;
+  }
+  private remember(id: string, fingerprint: string, result: OcrResult) {
+    // Bounded short-lived replay after an HTTP response is lost. Never retain the image.
+    while (this.completed.size >= 16) {
+      const oldest = this.completed.keys().next().value!;
+      clearTimeout(this.completed.get(oldest)!.timer);
+      this.completed.delete(oldest);
+    }
+    const entry: Completed = {
+      fingerprint,
+      result,
+      timer: setTimeout(() => {
+        if (this.completed.get(id) === entry) this.completed.delete(id);
+      }, this.resultTtlMs()),
+    };
+    entry.timer.unref();
+    this.completed.set(id, entry);
+  }
+  private async waitFor(task: Task, signal?: AbortSignal) {
+    task.waiters++;
+    let onAbort!: () => void;
+    const aborted = new Promise<never>((_, reject) => {
+      onAbort = () => reject(cancelled());
+    });
+    signal?.addEventListener('abort', onAbort, { once: true });
+    if (signal?.aborted) onAbort();
+    try {
+      return await Promise.race([task.result, aborted]);
+    } finally {
+      signal?.removeEventListener('abort', onAbort);
+      task.waiters--;
+      // A transport retry may still be awaiting the same job after one socket closes.
+      if (task.waiters === 0 && !task.settled) task.stop(cancelled());
+    }
+  }
   constructor(private readonly fetcher: typeof fetch = fetch) {}
   protected timeoutMs() {
     return 90_000;
@@ -58,15 +107,34 @@ export class GeminiInvoiceReader {
     if (!validModel)
       throw failure('GEMINI_MODEL_INVALID', 'La configuración del modelo Gemini no es válida.');
     if (context.signal?.aborted) throw cancelled();
+    const id = this.taskKey(context.principal, context.requestId ?? randomUUID());
+    const imageHash = createHash('sha256').update(file.buffer).digest('hex');
+    const fingerprint = createHash('sha256')
+      .update(imageHash)
+      .update(
+        JSON.stringify({
+          rotation: options.rotation,
+          crop: options.crop,
+          detailed: options.detailed,
+        }),
+      )
+      .digest('hex');
+    const existing = this.tasks.get(id) ?? this.completed.get(id);
+    if (existing) {
+      if (existing.fingerprint !== fingerprint)
+        throw failure(
+          'GEMINI_REQUEST_CONFLICT',
+          'Este intento corresponde a otra imagen u opciones. Inicia una lectura nueva.',
+          409,
+        );
+      return 'waiters' in existing ? this.waitFor(existing, context.signal) : existing.result;
+    }
     if (this.tasks.size >= 2)
       throw failure(
         'GEMINI_CAPACITY',
         'Hay dos lecturas de Gemini en curso. Espera unos segundos o cancela tu lectura anterior.',
         429,
       );
-    const id = context.requestId ?? randomUUID();
-    if (this.tasks.has(id))
-      throw failure('GEMINI_IN_PROGRESS', 'Esta lectura ya está en curso.', 409);
     const controller = new AbortController();
     let rejectStopped!: (reason: HttpException) => void,
       complete!: () => void,
@@ -78,8 +146,11 @@ export class GeminiInvoiceReader {
       complete = resolve;
     });
     const task: Task = {
-      principal: context.principal,
+      fingerprint,
       done,
+      result: undefined!,
+      waiters: 0,
+      settled: false,
       stop: (error) => {
         if (reason) return;
         reason = error;
@@ -89,8 +160,6 @@ export class GeminiInvoiceReader {
     };
     this.tasks.set(id, task);
     const deadline = setTimeout(() => task.stop(timeout()), this.timeoutMs());
-    const onAbort = () => task.stop(cancelled());
-    context.signal?.addEventListener('abort', onAbort, { once: true });
     const active = () => {
       if (reason) throw reason;
     };
@@ -258,7 +327,7 @@ export class GeminiInvoiceReader {
           reading,
           rawText: parsed.data.text,
           confidence: null,
-          imageHash: createHash('sha256').update(file.buffer).digest('hex'),
+          imageHash,
           attempts: 1,
           engine: 'gemini:' + model,
         };
@@ -271,29 +340,30 @@ export class GeminiInvoiceReader {
         );
       }
     };
-    try {
-      if (context.signal?.aborted) onAbort();
-      return await Promise.race([operation(), stopped]);
-    } finally {
-      clearTimeout(deadline);
-      context.signal?.removeEventListener('abort', onAbort);
-      if (this.tasks.get(id) === task) this.tasks.delete(id);
-      complete();
-    }
+    task.result = (async () => {
+      try {
+        const result = await Promise.race([operation(), stopped]);
+        this.remember(id, fingerprint, result);
+        return result;
+      } finally {
+        task.settled = true;
+        clearTimeout(deadline);
+        if (this.tasks.get(id) === task) this.tasks.delete(id);
+        complete();
+      }
+    })();
+    return this.waitFor(task, context.signal);
   }
   async cancel(principal: Principal, id: string) {
-    const task = this.tasks.get(id);
-    if (
-      !task ||
-      task.principal?.tenantId !== principal.tenantId ||
-      task.principal?.userId !== principal.userId
-    )
-      return { cancelled: false };
+    const task = this.tasks.get(this.taskKey(principal, id));
+    if (!task) return { cancelled: false };
     task.stop(cancelled());
     await task.done;
     return { cancelled: true };
   }
   async shutdown() {
+    for (const entry of this.completed.values()) clearTimeout(entry.timer);
+    this.completed.clear();
     const tasks = [...this.tasks.values()];
     for (const task of tasks) task.stop(cancelled());
     await Promise.all(tasks.map((t) => t.done));

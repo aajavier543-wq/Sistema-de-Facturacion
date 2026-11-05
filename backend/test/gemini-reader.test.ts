@@ -222,3 +222,132 @@ test('permite dos lecturas simultáneas y libera sus recursos al cancelar o cerr
   await reader.shutdown();
   await Promise.all([b, c]);
 });
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((r) => {
+    resolve = r;
+  });
+  return { promise, resolve };
+}
+test('repetir el mismo intento comparte el trabajo aun con capacidad llena y aísla imágenes, opciones y usuarios', async () => {
+  let calls = 0;
+  const ready = deferred<void>(),
+    finish = deferred<void>();
+  const reader = new GeminiInvoiceReader((async () => {
+    calls++;
+    if (calls === 2) ready.resolve();
+    await finish.promise;
+    return response();
+  }) as typeof fetch);
+  const principal = { tenantId: randomUUID(), userId: randomUUID(), role: 'admin' as const },
+    id = randomUUID();
+  try {
+    const a = reader.recognize(file(), options, { principal, requestId: id });
+    const b = reader.recognize(file(), options, { principal, requestId: id });
+    const other = reader.recognize(file(), options, {
+      principal: { ...principal, userId: randomUUID() },
+      requestId: id,
+    });
+    await ready.promise;
+    await assert.rejects(
+      reader.recognize(file(), { ...options, rotation: 90 }, { principal, requestId: id }),
+      code('GEMINI_REQUEST_CONFLICT'),
+    );
+    const different = { ...file(), buffer: Buffer.concat([buffer, Buffer.from('changed')]) };
+    await assert.rejects(
+      reader.recognize(different, options, { principal, requestId: id }),
+      code('GEMINI_REQUEST_CONFLICT'),
+    );
+    await assert.rejects(
+      reader.recognize(file(), options, {
+        principal: { ...principal, tenantId: randomUUID() },
+        requestId: id,
+      }),
+      code('GEMINI_CAPACITY'),
+    );
+    finish.resolve();
+    const results = await Promise.all([a, b, other]);
+    assert.deepEqual(results[0], results[1]);
+    assert.equal(calls, 2);
+    assert.deepEqual(
+      await reader.recognize(file(), options, { principal, requestId: id }),
+      results[0],
+    );
+    assert.equal(calls, 2);
+  } finally {
+    finish.resolve();
+    await reader.shutdown();
+  }
+});
+test('cerrar un transporte repetido no cancela el otro; cancelar el intento sí detiene todos sus transportes', async () => {
+  const entered = deferred<void>(),
+    finish = deferred<void>();
+  let calls = 0;
+  const reader = new GeminiInvoiceReader((async () => {
+    calls++;
+    entered.resolve();
+    await finish.promise;
+    return response();
+  }) as typeof fetch);
+  const principal = { tenantId: randomUUID(), userId: randomUUID(), role: 'admin' as const },
+    id = randomUUID(),
+    controller = new AbortController();
+  try {
+    const a = assert.rejects(
+      reader.recognize(file(), options, { principal, requestId: id, signal: controller.signal }),
+      code('OCR_CANCELLED'),
+    );
+    const b = reader.recognize(file(), options, { principal, requestId: id });
+    await entered.promise;
+    controller.abort();
+    await a;
+    finish.resolve();
+    assert.equal((await b).reading.lines.length, 6);
+    assert.equal(calls, 1);
+    const newId = randomUUID();
+    const c = assert.rejects(
+      reader.recognize(file(), options, { principal, requestId: newId }),
+      code('OCR_CANCELLED'),
+    );
+    const d = assert.rejects(
+      reader.recognize(file(), options, { principal, requestId: newId }),
+      code('OCR_CANCELLED'),
+    );
+    assert.deepEqual(await reader.cancel({ ...principal, tenantId: randomUUID() }, newId), {
+      cancelled: false,
+    });
+    assert.deepEqual(await reader.cancel(principal, newId), { cancelled: true });
+    await Promise.all([c, d]);
+  } finally {
+    finish.resolve();
+    await reader.shutdown();
+  }
+});
+test('los resultados repetibles caducan y los errores permiten un nuevo intento', async () => {
+  class ShortCache extends GeminiInvoiceReader {
+    protected override resultTtlMs() {
+      return 20;
+    }
+  }
+  let calls = 0;
+  const reader = new ShortCache((async () => {
+    calls++;
+    return calls === 1 ? new Response('', { status: 429 }) : response();
+  }) as typeof fetch);
+  const context = {
+    principal: { tenantId: randomUUID(), userId: randomUUID(), role: 'admin' as const },
+    requestId: randomUUID(),
+  };
+  try {
+    await assert.rejects(reader.recognize(file(), options, context), code('GEMINI_QUOTA'));
+    await reader.recognize(file(), options, context);
+    await reader.recognize(file(), options, context);
+    assert.equal(calls, 2);
+    await new Promise((r) => setTimeout(r, 40));
+    await reader.recognize(file(), options, context);
+    assert.equal(calls, 3);
+  } finally {
+    await reader.shutdown();
+  }
+});
