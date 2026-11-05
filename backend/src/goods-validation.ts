@@ -3,6 +3,7 @@ import { money, uuid } from './validation';
 export const goodsSchema = z
   .object({
     kind: z.enum(['adjustment', 'purchase']),
+    purchaseDocumentType: z.enum(['invoice', 'delivery_note']).default('invoice'),
     branchId: uuid,
     documentDate: z.iso.date(),
     description: z.string().trim().min(3).max(500),
@@ -46,13 +47,19 @@ export const goodsChecks = (data: z.infer<typeof goodsSchema>, ctx: z.Refinement
   if (data.currency === 'VES' && Number(data.exchangeRate) !== 1)
     issue(['exchangeRate'], 'En bolívares la tasa debe ser 1');
   if (data.kind === 'purchase') {
-    for (const field of ['supplierId', 'invoiceNumber', 'controlNumber', 'paymentTerms'] as const)
+    for (const field of ['supplierId', 'invoiceNumber', 'paymentTerms'] as const)
       if (!data[field]) issue([field], 'Campo requerido para una factura de compra');
+    if (data.purchaseDocumentType === 'invoice' && !data.controlNumber)
+      issue(['controlNumber'], 'Indica el número de control de la factura');
+    if (data.purchaseDocumentType === 'delivery_note' && data.controlNumber !== null)
+      issue(['controlNumber'], 'Una nota de entrega no lleva control fiscal');
     if (data.paymentTerms === 'credit' && !data.dueDate)
       issue(['dueDate'], 'Indica el vencimiento de la factura a crédito');
     if (data.lines.some((l) => l.direction !== 'entry'))
       issue(['lines'], 'Una factura de compra solo admite entradas');
   } else {
+    if (data.purchaseDocumentType !== 'invoice')
+      issue(['purchaseDocumentType'], 'El ajuste no tiene tipo de documento de compra');
     if (
       data.supplierId ||
       data.invoiceNumber ||

@@ -23,7 +23,7 @@ class ApiErrors implements ExceptionFilter {
       return response.status(409).json({
         message:
           (error as { constraint?: string }).constraint === 'purchase_invoice_unique'
-            ? 'El proveedor ya tiene una factura registrada con ese número.'
+            ? 'El proveedor ya tiene un documento de este tipo registrado con ese número.'
             : (error as { constraint?: string }).constraint === 'invoice_image_once'
               ? 'Esta imagen ya fue importada en la empresa.'
               : 'Registro duplicado',

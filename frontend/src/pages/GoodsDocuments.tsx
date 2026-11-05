@@ -18,6 +18,7 @@ type Line = {
   taxRate: '0' | '8' | '16';
 };
 type Header = {
+  purchaseDocumentType: 'invoice' | 'delivery_note';
   documentDate: string;
   description: string;
   currency: 'USD' | 'VES';
@@ -35,6 +36,7 @@ const today = () =>
     day: '2-digit',
   }).format(new Date());
 const blank = (): Header => ({
+  purchaseDocumentType: 'invoice',
   documentDate: today(),
   description: '',
   currency: 'VES',
@@ -257,6 +259,7 @@ export function GoodsDocuments({
   function hydrate(d: GoodsDocument) {
     setDocument(d);
     setHeader({
+      purchaseDocumentType: d.purchase_document_type ?? 'invoice',
       documentDate: d.document_date,
       description: d.description,
       currency: d.currency,
@@ -319,6 +322,7 @@ export function GoodsDocuments({
     }
     const body = {
       kind,
+      purchaseDocumentType: purchase ? header.purchaseDocumentType : 'invoice',
       branchId: branch,
       documentDate: header.documentDate,
       description: header.description,
@@ -326,7 +330,8 @@ export function GoodsDocuments({
       exchangeRate: header.currency === 'VES' ? '1' : decimal(header.exchangeRate),
       supplierId: purchase ? (supplier?.id ?? null) : null,
       invoiceNumber: purchase ? header.invoiceNumber : null,
-      controlNumber: purchase ? header.controlNumber : null,
+      controlNumber:
+        purchase && header.purchaseDocumentType === 'invoice' ? header.controlNumber : null,
       paymentTerms: purchase ? header.paymentTerms : null,
       dueDate: purchase && header.dueDate ? header.dueDate : null,
       lines: lines.map((l) => ({
@@ -465,7 +470,7 @@ export function GoodsDocuments({
             setPricingOpen(true);
             setError('');
             setNotice(
-              `Factura importada en borrador. ${d.createdProducts} artículos nuevos y ${d.linkedProducts} vinculados. Revisa el documento antes de confirmar la recepción.`,
+              `${d.purchase_document_type === 'delivery_note' ? 'Nota de entrega importada' : 'Factura importada'} en borrador. ${d.createdProducts} artículos nuevos y ${d.linkedProducts} vinculados. Revisa el documento antes de confirmar la recepción.`,
             );
             onChanged();
           }}
@@ -537,7 +542,7 @@ export function GoodsDocuments({
                     <th>Número interno</th>
                     <th>Fecha</th>
                     <th>{purchase ? 'Proveedor / descripción' : 'Descripción'}</th>
-                    {purchase && <th>N.º factura</th>}
+                    {purchase && <th>N.º documento</th>}
                     <th className="right">Total declarado</th>
                     <th>Estado</th>
                     <th></th>
@@ -552,7 +557,14 @@ export function GoodsDocuments({
                         <strong>{purchase ? d.supplier_name : d.description}</strong>
                         {purchase && <small>{d.description}</small>}
                       </td>
-                      {purchase && <td>{d.invoice_number}</td>}
+                      {purchase && (
+                        <td>
+                          {d.invoice_number}
+                          {d.purchase_document_type === 'delivery_note' && (
+                            <small>Nota de entrega · No fiscal</small>
+                          )}
+                        </td>
+                      )}
                       <td className="right number">
                         {d.currency === 'VES' ? 'Bs' : 'USD'} {money(d.total)}
                       </td>
@@ -743,7 +755,26 @@ export function GoodsDocuments({
                   </div>
                   <div className="purchase-fields">
                     <label>
-                      N.º factura del proveedor
+                      Tipo de documento
+                      <select
+                        aria-label="Tipo de documento de compra"
+                        value={header.purchaseDocumentType}
+                        onChange={(e) => {
+                          changeHeader(
+                            'purchaseDocumentType',
+                            e.target.value as Header['purchaseDocumentType'],
+                          );
+                          if (e.target.value === 'delivery_note') changeHeader('controlNumber', '');
+                        }}
+                      >
+                        <option value="invoice">Factura de compra</option>
+                        <option value="delivery_note">Nota de entrega · No fiscal</option>
+                      </select>
+                    </label>
+                    <label>
+                      {header.purchaseDocumentType === 'delivery_note'
+                        ? 'N.º nota de entrega'
+                        : 'N.º factura del proveedor'}
                       <input
                         required
                         value={header.invoiceNumber}
@@ -754,7 +785,13 @@ export function GoodsDocuments({
                     <label>
                       N.º control
                       <input
-                        required
+                        required={header.purchaseDocumentType === 'invoice'}
+                        disabled={confirmed || header.purchaseDocumentType === 'delivery_note'}
+                        placeholder={
+                          header.purchaseDocumentType === 'delivery_note'
+                            ? 'No aplica a nota de entrega'
+                            : ''
+                        }
                         value={header.controlNumber}
                         maxLength={80}
                         onChange={(e) => changeHeader('controlNumber', e.target.value)}

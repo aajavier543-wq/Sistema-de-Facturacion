@@ -11,7 +11,7 @@ import { Database, Principal } from '../src/database';
 import { migrate } from '../scripts/migrate';
 import { hashPassword } from '../src/security';
 import { invoiceExample } from '../src/invoice-example';
-import { invoiceImage } from './invoice-fixture';
+import { invoiceImage, deliveryImage } from './invoice-fixture';
 
 const dbName = 'goods_test_' + randomBytes(6).toString('hex');
 const tenant = randomUUID(),
@@ -1083,6 +1083,62 @@ test('bonificaciones de costo neto cero conservan precios existentes y no habili
   assert.equal(Number((await stock(b)).quantity), 1);
 });
 
+test('las notas de entrega se importan como documentos no fiscales, sin inventar control ni colisionar con facturas', async () => {
+  const input = reviewedInvoice({
+    purchaseDocumentType: 'delivery_note',
+    imageHash: 'd'.repeat(64),
+    invoiceNumber: 'DELIVERY-001',
+    controlNumber: null,
+  });
+  const imported = await request('/goods/invoice-images/apply', input);
+  assert.equal(imported.status, 201, JSON.stringify(imported.body));
+  assert.equal(imported.body.purchase_document_type, 'delivery_note');
+  assert.equal(imported.body.control_number, null);
+  assert.match(imported.body.description, /Nota de entrega/);
+  assert.equal(Number((await stock(imported.body.lines[0].product_id)).quantity), 0);
+  assert.equal(
+    (
+      await request('/goods/invoice-images/apply', {
+        ...input,
+        idempotencyKey: randomUUID(),
+        imageHash: 'e'.repeat(64),
+      })
+    ).status,
+    409,
+  );
+  assert.equal(
+    (await request('/goods/invoice-images/apply', { ...input, controlNumber: 'CONTROL-FISCAL' }))
+      .status,
+    400,
+  );
+  assert.equal(
+    (
+      await request('/goods/invoice-images/apply', {
+        ...input,
+        purchaseDocumentType: 'invoice',
+        controlNumber: null,
+      })
+    ).status,
+    400,
+  );
+  const invoice = await request('/goods/invoice-images/apply', {
+    ...input,
+    purchaseDocumentType: 'invoice',
+    controlNumber: '00-DELIVERY-001',
+    imageHash: 'f'.repeat(64),
+    idempotencyKey: randomUUID(),
+  });
+  assert.equal(invoice.status, 201, JSON.stringify(invoice.body));
+  assert.equal(invoice.body.purchase_document_type, 'invoice');
+  const priced = await priceDocument(imported.body.id, '40', ['30']);
+  assert.equal(priced.purchase_document_type, 'delivery_note');
+  const received = await request('/goods/documents/' + imported.body.id + '/confirm', {
+    expectedVersion: priced.version,
+  });
+  assert.equal(received.status, 201);
+  assert.equal(received.body.control_number, null);
+});
+
 if (process.env.RUN_BROWSER === '1')
   test('navegador: factura de compra y ajuste de salida con documento e historial', async () => {
     const browser = await chromium.launch({
@@ -1487,6 +1543,112 @@ if (process.env.RUN_BROWSER === '1')
       await page.getByRole('button', { name: 'Ver márgenes', exact: true }).click();
       await page.getByRole('heading', { name: 'Márgenes de la compra', exact: true }).waitFor();
       assert.equal(await page.getByLabel('Ganancia del artículo 1').isDisabled(), true);
+      assert.deepEqual(errors, []);
+    } finally {
+      await browser.close();
+    }
+  });
+
+if (process.env.RUN_BROWSER === '1')
+  test('navegador: lee otra distribución, revisa una nota en USD e importa sin control fiscal', async () => {
+    const browser = await chromium.launch({
+      executablePath: process.env.CHROMIUM_PATH ?? '/usr/bin/chromium',
+      headless: true,
+      args: ['--no-sandbox', '--disable-dev-shm-usage'],
+    });
+    try {
+      const page = await browser.newPage({
+        viewport: { width: 1440, height: 1000 },
+        locale: 'es-VE',
+        timezoneId: 'America/Caracas',
+      });
+      const errors: string[] = [];
+      page.on('pageerror', (e) => errors.push(e.message));
+      page.on('dialog', (d) => d.accept());
+      await page.goto(base.replace(/\/api$/, ''));
+      await page.getByLabel('Correo electrónico').fill('goods-admin@example.test');
+      await page.getByLabel('Contraseña', { exact: true }).fill(password);
+      await page.getByRole('button', { name: 'Ingresar al sistema' }).click();
+      await page.getByRole('heading', { name: 'Resumen de operaciones' }).waitFor();
+      await page.getByRole('button', { name: 'Facturas de compra', exact: true }).click();
+      await page.getByRole('button', { name: 'Importar imagen de factura', exact: true }).click();
+      const dialog = page.getByRole('dialog');
+      await dialog.getByLabel('Imagen de factura').setInputFiles({
+        name: 'nota-tabla-distinta.png',
+        mimeType: 'image/png',
+        buffer: await deliveryImage('reordered'),
+      });
+      // Preview controls remain optional; rotation can be reset before reading the source.
+      await dialog.getByRole('button', { name: 'Girar 90°', exact: true }).click();
+      await dialog.getByRole('button', { name: 'Girar 90°', exact: true }).click();
+      await dialog.getByRole('button', { name: 'Girar 90°', exact: true }).click();
+      await dialog.getByRole('button', { name: 'Girar 90°', exact: true }).click();
+      const frame = dialog.locator('.ocr-crop-frame');
+      await frame.waitFor();
+      const box = await frame.boundingBox();
+      assert.ok(box);
+      await page.mouse.move(box.x + 2, box.y + 2);
+      await page.mouse.down();
+      await page.mouse.move(box.x + box.width - 2, box.y + box.height - 2, { steps: 5 });
+      await page.mouse.up();
+      await dialog.getByText(/Área seleccionada/).waitFor();
+      await dialog.getByRole('button', { name: 'Leer imagen y preparar factura' }).click();
+      await dialog.getByLabel('Tipo de documento leído').waitFor({ timeout: 30000 });
+      assert.equal(
+        await dialog.getByLabel('Tipo de documento leído').inputValue(),
+        'delivery_note',
+      );
+      assert.equal(
+        await dialog.getByLabel('Número de nota de entrega', { exact: true }).inputValue(),
+        '0000-1197',
+      );
+      assert.equal(
+        await dialog.getByLabel('Número de control', { exact: true }).isDisabled(),
+        true,
+      );
+      assert.equal(await dialog.getByLabel('RIF del proveedor').inputValue(), 'J502706259');
+      assert.equal(await dialog.getByLabel('Moneda de factura').inputValue(), 'USD');
+      assert.equal(await dialog.getByLabel('Cantidad importada 1').inputValue(), '2000');
+      assert.equal(await dialog.getByLabel('Costo importado 1').inputValue(), '0.3');
+      assert.equal(await dialog.getByLabel('Descripción importada 6').count(), 1);
+      assert.equal(await dialog.getByLabel('Cantidad importada 4').inputValue(), '20000');
+      await dialog.getByLabel('Tasa de conversión Bs/USD').fill('40');
+      await dialog.getByLabel('IVA para todos', { exact: true }).selectOption('0');
+      await dialog.getByRole('button', { name: 'Aplicar IVA a los renglones' }).click();
+      await dialog.getByRole('checkbox').check();
+      if (process.env.SCREENSHOT_DIR)
+        await page.screenshot({
+          path: process.env.SCREENSHOT_DIR + '/nota-lectura-columnas.png',
+          fullPage: true,
+        });
+      await dialog.getByRole('button', { name: 'Crear artículos y nota en borrador' }).click();
+      await page.getByRole('heading', { name: 'Márgenes de ganancia', exact: true }).waitFor();
+      await page.getByLabel('Ganancia inicial para todos').fill('30');
+      await page.getByRole('button', { name: 'Aplicar a todos', exact: true }).click();
+      await page.getByRole('button', { name: 'Guardar márgenes', exact: true }).click();
+      await page
+        .getByRole('heading', { name: 'Márgenes de ganancia', exact: true })
+        .waitFor({ state: 'hidden' });
+      assert.equal(
+        await page.getByLabel('Tipo de documento de compra').inputValue(),
+        'delivery_note',
+      );
+      assert.equal(
+        await page
+          .locator('.goods-workspace:visible')
+          .getByLabel('N.º control', { exact: true })
+          .isDisabled(),
+        true,
+      );
+      const documents = await request(
+        '/goods/documents?branchId=' + branch + '&kind=purchase&search=0000-1197',
+      );
+      assert.equal(documents.body.total, 1);
+      const doc = await request('/goods/documents/' + documents.body.items[0].id);
+      assert.equal(doc.body.purchase_document_type, 'delivery_note');
+      assert.equal(doc.body.lines.length, 6);
+      assert.equal(doc.body.status, 'draft');
+      assert.equal(Number((await stock(doc.body.lines[0].product_id)).quantity), 0);
       assert.deepEqual(errors, []);
     } finally {
       await browser.close();

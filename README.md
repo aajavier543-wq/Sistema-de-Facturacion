@@ -20,7 +20,7 @@ Backend NestJS/TypeScript, PostgreSQL 17 con RLS e interfaz React. Node.js 24 re
 - Facturas de compra con proveedores, control de duplicados, descuentos, IVA y recepción de mercancía.
 - Valoración por costo promedio conocido, sin inventar costos históricos ausentes.
 - Márgenes individuales después de guardar una compra, con descuento neto, IVA separado y actualización de precios al recibir.
-- Importación de facturas desde imágenes con OCR español local y revisión antes de recibir stock.
+- Importación de facturas y notas de entrega con OCR español, reconocimiento de columnas, recorte/giro y revisión antes de recibir stock.
 - Catálogo de los 18 artículos del ejemplo NICO PHARMA, con precios de venta pendientes.
 
 Consulta [facturas desde imágenes](docs/invoice-images.md) para el flujo, los límites y la

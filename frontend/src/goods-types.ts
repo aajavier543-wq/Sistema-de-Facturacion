@@ -24,6 +24,7 @@ export type GoodsLine = {
 export type GoodsDocument = {
   id: string;
   kind: GoodsKind;
+  purchase_document_type: 'invoice' | 'delivery_note';
   branch_id: string;
   display_number: string;
   status: 'draft' | 'confirmed';

@@ -15,6 +15,7 @@ export const invoiceReviewSchema = z
     idempotencyKey: uuid,
     reviewed: z.literal(true),
     sourceKind: z.enum(['image', 'example']),
+    purchaseDocumentType: z.enum(['invoice', 'delivery_note']).default('invoice'),
     imageHash: z
       .string()
       .regex(/^[a-f0-9]{64}$/)
@@ -28,7 +29,7 @@ export const invoiceReviewSchema = z
       .transform((s) => s.toUpperCase().replace(/[-\s]/g, ''))
       .pipe(z.string().regex(/^[VJEGP]\d{9}$/, 'Verifica el RIF del proveedor')),
     invoiceNumber: z.string().trim().min(1).max(80),
-    controlNumber: z.string().trim().min(1).max(80),
+    controlNumber: z.string().trim().min(1).max(80).nullable().default(null),
     documentDate: z.iso.date(),
     currency: z.enum(['USD', 'VES']),
     exchangeRate: z.string().regex(/^(0|[1-9]\d{0,11})(\.\d{1,10})?$/),
@@ -54,6 +55,18 @@ export const invoiceReviewSchema = z
   })
   .strict()
   .superRefine((v, ctx) => {
+    if (v.purchaseDocumentType === 'invoice' && !v.controlNumber)
+      ctx.addIssue({
+        code: 'custom',
+        path: ['controlNumber'],
+        message: 'Indica el control de la factura',
+      });
+    if (v.purchaseDocumentType === 'delivery_note' && v.controlNumber !== null)
+      ctx.addIssue({
+        code: 'custom',
+        path: ['controlNumber'],
+        message: 'Una nota de entrega no lleva control fiscal',
+      });
     if (v.sourceKind === 'image' && !v.imageHash)
       ctx.addIssue({
         code: 'custom',
@@ -132,9 +145,13 @@ export class InvoiceImporter {
       }
       const data = parse(goodsSchema.superRefine(goodsChecks), {
         kind: 'purchase',
+        purchaseDocumentType: input.purchaseDocumentType,
         branchId: input.branchId,
         documentDate: input.documentDate,
-        description: 'Factura importada ' + input.invoiceNumber,
+        description:
+          (input.purchaseDocumentType === 'delivery_note'
+            ? 'Nota de entrega importada '
+            : 'Factura importada ') + input.invoiceNumber,
         currency: input.currency,
         exchangeRate: input.exchangeRate,
         supplierId: supplier.id,

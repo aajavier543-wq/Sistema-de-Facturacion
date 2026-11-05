@@ -12,8 +12,12 @@ type Row = {
   taxRate: string;
   existingSku: string;
   sourceKey?: string | null;
+  sourceInfo?: string;
 };
 type Reading = {
+  documentType?: 'invoice' | 'delivery_note' | 'unknown';
+  dueDate?: string | null;
+  paymentTerms?: 'cash' | 'credit';
   supplierName: string | null;
   supplierRif: string | null;
   invoiceNumber: string | null;
@@ -30,6 +34,10 @@ type Reading = {
     discountPercent: string;
     taxRate: string | null;
     sourceKey?: string | null;
+    sourceCode?: string;
+    lot?: string;
+    expiry?: string;
+    unit?: string;
   }[];
 };
 type Result = {
@@ -40,6 +48,7 @@ type Result = {
   sourceKind?: 'example' | 'image';
 };
 type Header = {
+  purchaseDocumentType: 'invoice' | 'delivery_note' | '';
   supplierName: string;
   supplierRif: string;
   invoiceNumber: string;
@@ -81,6 +90,13 @@ export function InvoiceImageImport({
 }) {
   const [file, setFile] = useState<File | null>(null);
   const [preview, setPreview] = useState('');
+  const [rotation, setRotation] = useState<0 | 90 | 180 | 270>(0);
+  const [crop, setCrop] = useState<{ x: number; y: number; width: number; height: number } | null>(
+    null,
+  );
+  const [detailed, setDetailed] = useState(false);
+  const [batchTax, setBatchTax] = useState('');
+  const cropStart = useRef<{ x: number; y: number } | null>(null);
   const [result, setResult] = useState<Result | null>(null);
   const [header, setHeader] = useState<Header | null>(null);
   const [rows, setRows] = useState<Row[]>([]);
@@ -94,10 +110,48 @@ export function InvoiceImageImport({
       setPreview('');
       return;
     }
+    let cancelled = false;
     const url = URL.createObjectURL(file);
-    setPreview(url);
-    return () => URL.revokeObjectURL(url);
-  }, [file]);
+    const img = new Image();
+    img.onload = () => {
+      if (cancelled) return;
+      if (rotation === 0) {
+        setPreview(url);
+        return;
+      }
+      const swap = rotation === 90 || rotation === 270;
+      const scale = Math.min(1, 1400 / Math.max(img.naturalWidth, img.naturalHeight));
+      const canvas = window.document.createElement('canvas');
+      canvas.width = Math.round((swap ? img.naturalHeight : img.naturalWidth) * scale);
+      canvas.height = Math.round((swap ? img.naturalWidth : img.naturalHeight) * scale);
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return;
+      ctx.fillStyle = 'white';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.translate(canvas.width / 2, canvas.height / 2);
+      ctx.rotate((rotation * Math.PI) / 180);
+      ctx.drawImage(
+        img,
+        (-img.naturalWidth * scale) / 2,
+        (-img.naturalHeight * scale) / 2,
+        img.naturalWidth * scale,
+        img.naturalHeight * scale,
+      );
+      setPreview(canvas.toDataURL('image/png'));
+    };
+    img.src = url;
+    return () => {
+      cancelled = true;
+      URL.revokeObjectURL(url);
+    };
+  }, [file, rotation]);
+  function cropPoint(e: React.PointerEvent<HTMLDivElement>) {
+    const box = e.currentTarget.getBoundingClientRect();
+    return {
+      x: Math.max(0, Math.min(1, (e.clientX - box.left) / box.width)),
+      y: Math.max(0, Math.min(1, (e.clientY - box.top) / box.height)),
+    };
+  }
   const total = calc(rows);
   let matches = false;
   try {
@@ -107,6 +161,12 @@ export function InvoiceImageImport({
   function load(d: Result) {
     setResult(d);
     setHeader({
+      purchaseDocumentType:
+        d.reading.documentType === 'delivery_note'
+          ? 'delivery_note'
+          : d.reading.documentType === 'invoice' || d.sourceKind === 'example'
+            ? 'invoice'
+            : '',
       supplierName: d.reading.supplierName ?? '',
       supplierRif: d.reading.supplierRif ?? '',
       invoiceNumber: d.reading.invoiceNumber ?? '',
@@ -115,8 +175,8 @@ export function InvoiceImageImport({
       currency: d.reading.currency,
       exchangeRate: d.reading.exchangeRate ?? '',
       declaredTotal: d.reading.declaredTotal ?? '',
-      paymentTerms: 'cash',
-      dueDate: '',
+      paymentTerms: d.reading.paymentTerms ?? 'cash',
+      dueDate: d.reading.dueDate ?? '',
     });
     setRows(
       d.reading.lines.map((l) => ({
@@ -128,6 +188,14 @@ export function InvoiceImageImport({
         taxRate: l.taxRate ?? '',
         existingSku: '',
         sourceKey: l.sourceKey,
+        sourceInfo: [
+          l.sourceCode ? 'Código proveedor: ' + l.sourceCode : '',
+          l.lot ? 'Lote: ' + l.lot : '',
+          l.expiry ? 'Vence: ' + l.expiry : '',
+          l.unit ? 'Unidad: ' + l.unit : '',
+        ]
+          .filter(Boolean)
+          .join(' · '),
       })),
     );
     setReviewed(false);
@@ -148,6 +216,7 @@ export function InvoiceImageImport({
     try {
       const body = new FormData();
       body.append('image', file);
+      body.append('options', JSON.stringify({ rotation, crop, detailed }));
       load({
         ...(await api<Result>('/goods/invoice-images/read', 'POST', body)),
         sourceKind: 'image',
@@ -199,6 +268,10 @@ export function InvoiceImageImport({
   }
   async function apply() {
     if (!header || !result) return;
+    if (!header.purchaseDocumentType) {
+      setError('Selecciona el tipo de documento antes de importar.');
+      return;
+    }
     if (!reviewed) {
       setError('Confirma la revisión de los datos de la imagen.');
       return;
@@ -209,6 +282,7 @@ export function InvoiceImageImport({
     }
     const body = {
       ...header,
+      controlNumber: header.purchaseDocumentType === 'delivery_note' ? null : header.controlNumber,
       exchangeRate: header.currency === 'VES' ? '1' : dec(header.exchangeRate),
       declaredTotal: dec(header.declaredTotal),
       dueDate: header.dueDate || null,
@@ -251,7 +325,7 @@ export function InvoiceImageImport({
   return (
     <Dialog
       title="Importar factura desde imagen"
-      subtitle="Lectura automática, revisión y creación de un borrador de compra"
+      subtitle="Facturas y notas de entrega · Lectura por encabezados y columnas"
       onClose={onClose}
       busy={busy}
     >
@@ -272,6 +346,8 @@ export function InvoiceImageImport({
                     disabled={busy}
                     onChange={(e) => {
                       setFile(e.target.files?.[0] ?? null);
+                      setRotation(0);
+                      setCrop(null);
                       setError('');
                     }}
                   />
@@ -280,6 +356,41 @@ export function InvoiceImageImport({
                   Usa una foto nítida, recta y con todos los bordes visibles. La lectura se procesa
                   en el servidor de la aplicación. No se envía a un proveedor externo de OCR.
                 </p>
+                <div className="ocr-preparation">
+                  <label>
+                    <input
+                      type="checkbox"
+                      checked={detailed}
+                      onChange={(e) => setDetailed(e.target.checked)}
+                      disabled={busy}
+                    />
+                    Lectura detallada para fotos difíciles
+                  </label>
+                  <p>
+                    Si aparece fondo alrededor del papel, arrastra sobre la vista previa para
+                    seleccionar solo el documento.
+                  </p>
+                  <div>
+                    <Button
+                      disabled={busy || !file}
+                      onClick={() => {
+                        setRotation((r) => ((r + 90) % 360) as typeof rotation);
+                        setCrop(null);
+                      }}
+                    >
+                      Girar 90°
+                    </Button>
+                    <Button disabled={busy || !crop} onClick={() => setCrop(null)}>
+                      Usar imagen completa
+                    </Button>
+                  </div>
+                  {crop && (
+                    <span className="badge neutral">
+                      Área seleccionada: {Math.round(crop.width * 100)} % ×{' '}
+                      {Math.round(crop.height * 100)} %
+                    </span>
+                  )}
+                </div>
                 <Button
                   variant="primary"
                   icon="search"
@@ -291,7 +402,47 @@ export function InvoiceImageImport({
               </div>
               <div className="invoice-preview">
                 {preview ? (
-                  <img src={preview} alt="Factura seleccionada para revisar" />
+                  <div
+                    className="ocr-crop-frame"
+                    style={{ touchAction: 'none' }}
+                    onPointerDown={(e) => {
+                      if (busy) return;
+                      cropStart.current = cropPoint(e);
+                      e.currentTarget.setPointerCapture(e.pointerId);
+                    }}
+                    onPointerMove={(e) => {
+                      if (!cropStart.current || busy) return;
+                      const p = cropPoint(e),
+                        a = cropStart.current;
+                      setCrop({
+                        x: Math.min(p.x, a.x),
+                        y: Math.min(p.y, a.y),
+                        width: Math.abs(p.x - a.x),
+                        height: Math.abs(p.y - a.y),
+                      });
+                    }}
+                    onPointerUp={() => {
+                      cropStart.current = null;
+                      setCrop((c) => (c && (c.width < 0.05 || c.height < 0.05) ? null : c));
+                    }}
+                    onPointerCancel={() => {
+                      cropStart.current = null;
+                      setCrop((c) => (c && (c.width < 0.05 || c.height < 0.05) ? null : c));
+                    }}
+                  >
+                    <img draggable={false} src={preview} alt="Factura seleccionada para revisar" />
+                    {crop && (
+                      <span
+                        className="ocr-crop-selection"
+                        style={{
+                          left: crop.x * 100 + '%',
+                          top: crop.y * 100 + '%',
+                          width: crop.width * 100 + '%',
+                          height: crop.height * 100 + '%',
+                        }}
+                      />
+                    )}
+                  </div>
                 ) : (
                   <div>
                     <Icon name="file" size={46} />
@@ -341,6 +492,25 @@ export function InvoiceImageImport({
               ))}
               <div className="invoice-review-header">
                 <label>
+                  Tipo de documento
+                  <select
+                    aria-label="Tipo de documento leído"
+                    required
+                    value={header.purchaseDocumentType}
+                    onChange={(e) => {
+                      field(
+                        'purchaseDocumentType',
+                        e.target.value as Header['purchaseDocumentType'],
+                      );
+                      if (e.target.value === 'delivery_note') field('controlNumber', '');
+                    }}
+                  >
+                    <option value="">Revisar tipo</option>
+                    <option value="invoice">Factura de compra</option>
+                    <option value="delivery_note">Nota de entrega · No fiscal</option>
+                  </select>
+                </label>
+                <label>
                   Razón social del proveedor
                   <input
                     required
@@ -359,7 +529,9 @@ export function InvoiceImageImport({
                   />
                 </label>
                 <label>
-                  Número de factura
+                  {header.purchaseDocumentType === 'delivery_note'
+                    ? 'Número de nota de entrega'
+                    : 'Número de factura'}
                   <input
                     required
                     maxLength={80}
@@ -370,7 +542,13 @@ export function InvoiceImageImport({
                 <label>
                   Número de control
                   <input
-                    required
+                    required={header.purchaseDocumentType === 'invoice'}
+                    disabled={header.purchaseDocumentType === 'delivery_note'}
+                    placeholder={
+                      header.purchaseDocumentType === 'delivery_note'
+                        ? 'No aplica a nota de entrega'
+                        : ''
+                    }
                     maxLength={80}
                     value={header.controlNumber}
                     onChange={(e) => field('controlNumber', e.target.value)}
@@ -442,6 +620,36 @@ export function InvoiceImageImport({
                   />
                 </label>
               </div>
+              {header.purchaseDocumentType === 'delivery_note' && (
+                <div className="alert warning">
+                  Nota de entrega: recepción no fiscal. No se inventará control fiscal ni crédito
+                  fiscal. Revisa emisor, moneda y tratamiento de IVA antes de recibir.
+                </div>
+              )}
+              <div className="ocr-tax-controls">
+                <label>
+                  IVA para todos
+                  <select
+                    aria-label="IVA para todos"
+                    value={batchTax}
+                    onChange={(e) => setBatchTax(e.target.value)}
+                  >
+                    <option value="">Seleccionar</option>
+                    <option value="0">Exento / sin IVA</option>
+                    <option value="8">8 %</option>
+                    <option value="16">16 %</option>
+                  </select>
+                </label>
+                <Button
+                  disabled={!batchTax}
+                  onClick={() => {
+                    setRows((old) => old.map((r) => ({ ...r, taxRate: batchTax })));
+                    setReviewed(false);
+                  }}
+                >
+                  Aplicar IVA a los renglones
+                </Button>
+              </div>
               <div className="invoice-review-layout">
                 <div>
                   <div className="table-scroll">
@@ -475,6 +683,9 @@ export function InvoiceImageImport({
                                 onChange={(e) => line(i, 'existingSku', e.target.value)}
                                 placeholder="Código existente (opcional)"
                               />
+                              {r.sourceInfo && (
+                                <small className="ocr-source-info">{r.sourceInfo}</small>
+                              )}
                             </td>
                             <td>
                               <input
@@ -611,7 +822,11 @@ export function InvoiceImageImport({
                   type="submit"
                   disabled={!matches || !rows.length || !reviewed || busy}
                 >
-                  {busy ? 'Importando…' : 'Crear artículos y factura en borrador'}
+                  {busy
+                    ? 'Importando…'
+                    : header.purchaseDocumentType === 'delivery_note'
+                      ? 'Crear artículos y nota en borrador'
+                      : 'Crear artículos y factura en borrador'}
                 </Button>
               </div>
             </fieldset>

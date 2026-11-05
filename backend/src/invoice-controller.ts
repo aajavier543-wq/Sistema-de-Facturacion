@@ -1,5 +1,6 @@
 import {
   Body,
+  BadRequestException,
   Controller,
   Get,
   Post,
@@ -11,7 +12,7 @@ import {
 import { FileInterceptor } from '@nestjs/platform-express';
 import { AuthRequest, requireAdmin, TenantGuard } from './auth';
 import { Database } from './database';
-import { InvoiceOcr } from './invoice-ocr';
+import { InvoiceOcr, ocrOptionsSchema } from './invoice-ocr';
 import { InvoiceImporter, invoiceReviewSchema } from './invoice-import';
 import { parse } from './validation';
 import { invoiceExample } from './invoice-example';
@@ -31,16 +32,28 @@ export class InvoiceImageController {
   )
   read(
     @Req() req: AuthRequest,
+    @Body('options') options: unknown,
     @UploadedFile() file: { buffer: Buffer; mimetype: string; size: number } | undefined,
   ) {
     requireAdmin(req.principal);
-    return this.ocr.recognize(file);
+    let input: unknown = {};
+    if (options !== undefined) {
+      if (typeof options !== 'string' || options.length > 1000)
+        throw new BadRequestException('Opciones de lectura inválidas');
+      try {
+        input = JSON.parse(options);
+      } catch {
+        throw new BadRequestException('Opciones de lectura inválidas');
+      }
+    }
+    return this.ocr.recognize(file, parse(ocrOptionsSchema, input));
   }
   @Get('example') example(@Req() req: AuthRequest) {
     requireAdmin(req.principal);
     return {
       reading: {
         ...invoiceExample,
+        documentType: 'invoice',
         lines: invoiceExample.lines.map((l) => ({ ...l, printedTotal: null })),
       },
       rawText: 'Transcripción del ejemplo proporcionado por el usuario; no es un resultado OCR.',

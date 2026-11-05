@@ -49,8 +49,14 @@ export class GoodsService {
         ),
     };
   }
-  private number(d: { kind: string; number: string }) {
-    return (d.kind === 'adjustment' ? 'AJ-' : 'FC-') + String(d.number).padStart(6, '0');
+  private number(d: { kind: string; number: string; purchase_document_type?: string }) {
+    return (
+      (d.kind === 'adjustment'
+        ? 'AJ-'
+        : d.purchase_document_type === 'delivery_note'
+          ? 'NE-'
+          : 'FC-') + String(d.number).padStart(6, '0')
+    );
   }
   async get(p: Principal, id: string) {
     requireAdmin(p);
@@ -66,13 +72,13 @@ export class GoodsService {
       const from = `FROM inventory_documents d LEFT JOIN suppliers s ON s.tenant_id=d.tenant_id AND s.id=d.supplier_id
        WHERE d.branch_id=$1 AND d.kind=$2 AND (strpos(lower(d.description),lower($3))>0
        OR strpos(coalesce(d.invoice_number,''),upper($3))>0 OR strpos(lower(coalesce(s.name,'')),lower($3))>0
-       OR d.number::text=$3 OR (CASE WHEN d.kind='adjustment' THEN 'AJ-' ELSE 'FC-' END ||
+       OR d.number::text=$3 OR (CASE WHEN d.kind='adjustment' THEN 'AJ-' WHEN d.purchase_document_type='delivery_note' THEN 'NE-' ELSE 'FC-' END ||
        lpad(d.number::text,greatest(6,length(d.number::text)),'0'))=upper($3))`;
       const params = [q.branchId, q.kind, q.search];
       const count = await c.query(`SELECT count(*)::int AS total ${from}`, params);
       const rows = await c.query(
         `SELECT d.id,d.kind,d.number,d.status,d.document_date::text,d.description,d.currency,
-       d.total,d.version,d.invoice_number,s.name AS supplier_name ${from} ORDER BY d.number DESC LIMIT $4 OFFSET $5`,
+       d.total,d.version,d.invoice_number,d.purchase_document_type,s.name AS supplier_name ${from} ORDER BY d.number DESC LIMIT $4 OFFSET $5`,
         [...params, q.limit, q.offset],
       );
       return {
@@ -188,8 +194,8 @@ export class GoodsService {
       await c.query(
         `UPDATE inventory_documents SET document_date=$2,description=$3,currency=$4,exchange_rate=$5,
          supplier_id=$6,invoice_number=$7,control_number=$8,payment_terms=$9,due_date=$10,
-         subtotal=$11,discount_total=$12,tax_total=$13,total=$14,version=version+1,pricing_required=(kind='purchase'),pricing_rate=NULL,pricing_key=NULL,pricing_hash=NULL WHERE id=$1`,
-        [id, ...values],
+         subtotal=$11,discount_total=$12,tax_total=$13,total=$14,version=version+1,pricing_required=(kind='purchase'),pricing_rate=NULL,pricing_key=NULL,pricing_hash=NULL,purchase_document_type=$15 WHERE id=$1`,
+        [id, ...values, data.purchaseDocumentType],
       );
       await c.query('DELETE FROM inventory_document_lines WHERE document_id=$1', [id]);
     } else {
@@ -201,8 +207,8 @@ export class GoodsService {
       const doc = await c.query(
         `INSERT INTO inventory_documents(tenant_id,branch_id,kind,number,document_date,
          description,currency,exchange_rate,supplier_id,invoice_number,control_number,payment_terms,due_date,
-         subtotal,discount_total,tax_total,total,create_key,create_hash,created_by,pricing_required)
-         VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21) RETURNING id`,
+         subtotal,discount_total,tax_total,total,create_key,create_hash,created_by,pricing_required,purchase_document_type)
+         VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22) RETURNING id`,
         [
           p.tenantId,
           data.branchId,
@@ -213,6 +219,7 @@ export class GoodsService {
           hash,
           p.userId,
           data.kind === 'purchase',
+          data.purchaseDocumentType,
         ],
       );
       documentId = doc.rows[0].id;

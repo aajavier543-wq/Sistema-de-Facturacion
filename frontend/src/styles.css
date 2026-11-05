@@ -2527,3 +2527,68 @@ td small {
     white-space: normal;
   }
 }
+.ocr-preparation {
+  margin: 16px 0;
+  display: grid;
+  gap: 10px;
+  font-size: 12px;
+}
+.invoice-import .ocr-preparation label {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.invoice-import .ocr-preparation input[type='checkbox'] {
+  width: auto;
+}
+.ocr-preparation p {
+  color: #64748b;
+  line-height: 1.6;
+}
+.ocr-preparation > div {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.invoice-upload-grid .invoice-preview {
+  max-height: 620px;
+  overflow: auto;
+}
+.ocr-crop-frame {
+  width: 100%;
+  position: relative;
+  overflow: hidden;
+  cursor: crosshair;
+  line-height: 0;
+}
+.invoice-preview .ocr-crop-frame img {
+  max-height: none;
+  width: 100%;
+  display: block;
+  user-select: none;
+}
+.ocr-crop-selection {
+  position: absolute;
+  border: 2px solid #1765d8;
+  background: #1765d820;
+  box-shadow: 0 0 0 3000px #0b1d3840;
+  pointer-events: none;
+}
+.ocr-tax-controls {
+  display: flex;
+  gap: 14px;
+  align-items: end;
+  margin: 16px 0;
+  flex-wrap: wrap;
+}
+.ocr-tax-controls label {
+  min-width: 160px;
+}
+.ocr-source-info {
+  display: block;
+  white-space: normal;
+  font-size: 10px;
+  line-height: 1.5;
+  margin-top: 7px;
+  color: #64748b;
+}

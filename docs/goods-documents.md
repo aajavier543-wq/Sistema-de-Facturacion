@@ -24,7 +24,8 @@ artículo seleccionado. No hay una segunda pantalla de ajuste rápido dentro de 
 ## Facturas de compra
 
 1. Abre **Compras → Facturas de compra → Nueva factura de compra**.
-2. Selecciona un proveedor o regístralo con RIF y razón social.
+2. Selecciona un proveedor o regístralo con RIF y razón social. Elige factura o nota de entrega;
+   la nota es no fiscal y no lleva número de control.
 3. Introduce fecha, descripción, número de factura del proveedor, número de control,
    condición de pago, moneda y tasa. Para crédito, indica un vencimiento no anterior a la factura.
 4. Agrega cantidades, costos unitarios, descuento porcentual e IVA por renglón (0/exento, 8 o 16 %).
@@ -36,9 +37,9 @@ artículo seleccionado. No hay una segunda pantalla de ajuste rápido dentro de 
    Puedes reabrir **Márgenes de ganancia** mientras el documento siga en borrador. Después
    de confirmar, **Ver márgenes** permite consultar la propuesta protegida.
 
-El número `FC-...` es un identificador interno; no sustituye el número/control del proveedor
+Los números `FC-...` (facturas) y `NE-...` (notas de entrega) son identificadores internos; no sustituye el número/control del proveedor
 ni es un correlativo fiscal de ventas. El sistema rechaza un segundo documento con el mismo
-número de factura normalizado para el mismo proveedor y empresa, incluso en otra sucursal.
+número normalizado y tipo de documento para el mismo proveedor y empresa, incluso en otra sucursal.
 
 La condición de pago es informativa: esta entrega no ejecuta pagos, no mueve caja/bancos y
 no lleva aún cuentas por pagar. Los costos y descuentos se capturan sin pedir precios de venta.
