@@ -495,7 +495,10 @@ export function InvoiceImageImport({
             >
               {checking ? 'Comprobando conexión…' : 'Comprobar conexión'}
             </Button>
-            <span>Comprueba el acceso a Google sin enviar la fotografía ni generar contenido.</span>
+            <span>
+              Comprueba el acceso a Google sin enviar la fotografía ni generar contenido. Si Google
+              está ocupado, realiza hasta dos reintentos dentro del tiempo de espera.
+            </span>
           </div>
         )}
         {isReading && (
@@ -509,6 +512,8 @@ export function InvoiceImageImport({
               <small>
                 Puedes detener la lectura y volver a intentarlo. Esta lectura no modifica el
                 inventario.
+                {externalReader &&
+                  ' Si Google responde con un fallo temporal, se realizan hasta dos reintentos dentro de este mismo límite.'}
               </small>
             </div>
             <Button disabled={cancelling} onClick={() => stopReading('user')}>

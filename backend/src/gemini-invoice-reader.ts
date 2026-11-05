@@ -5,6 +5,7 @@ import type { Principal } from './database';
 import type { OcrOptions } from './ocr-options';
 import type { OcrResult } from './invoice-ocr';
 import { boundedGoogleJson, googleFailure } from './gemini-errors';
+import { fetchGeminiWithRetry } from './gemini-retry';
 import {
   documentVisionInstruction,
   geminiDocumentSchema,
@@ -94,6 +95,9 @@ export class GeminiInvoiceReader {
       waitSeconds: Math.ceil(this.timeoutMs() / 1000),
     };
   }
+  protected retryBaseMs() {
+    return 1000;
+  }
   protected checkTimeoutMs() {
     return 15_000;
   }
@@ -120,6 +124,7 @@ export class GeminiInvoiceReader {
       rejectStopped(error);
     };
     const onAbort = () => stop(cancelled());
+    const deadlineAt = Date.now() + this.checkTimeoutMs();
     const timer = setTimeout(
       () =>
         stop(
@@ -136,7 +141,8 @@ export class GeminiInvoiceReader {
       try {
         if (signal?.aborted) onAbort();
         if (reason) throw reason;
-        const response = await this.fetcher(
+        const { response, attempts } = await fetchGeminiWithRetry(
+          this.fetcher,
           'https://generativelanguage.googleapis.com/v1beta/models/' + encodeURIComponent(model),
           {
             method: 'GET',
@@ -144,9 +150,11 @@ export class GeminiInvoiceReader {
             signal: controller.signal,
             headers: { 'x-goog-api-key': key, accept: 'application/json' },
           },
+          deadlineAt,
+          this.retryBaseMs(),
         );
         if (reason) throw reason;
-        if (!response.ok) throw await googleFailure(response);
+        if (!response.ok) throw await googleFailure(response, attempts);
         const data = (await boundedGoogleJson(response)) as any;
         if (reason) throw reason;
         if (
@@ -161,6 +169,7 @@ export class GeminiInvoiceReader {
           provider: 'gemini',
           model,
           available: true,
+          attempts,
           checkedAt: new Date().toISOString(),
           message:
             'Google aceptó la clave y confirmó el acceso al modelo. La lectura de imágenes y su cuota se comprobarán al importar.',
@@ -247,6 +256,7 @@ export class GeminiInvoiceReader {
       },
     };
     this.tasks.set(id, task);
+    const deadlineAt = Date.now() + this.timeoutMs();
     const deadline = setTimeout(() => task.stop(timeout()), this.timeoutMs());
     const active = () => {
       if (reason) throw reason;
@@ -295,7 +305,8 @@ export class GeminiInvoiceReader {
         active();
         if (jpeg.length > 8 * 1024 * 1024)
           throw new BadRequestException('Recorta la imagen antes de enviarla a Gemini.');
-        const response = await this.fetcher(
+        const { response, attempts } = await fetchGeminiWithRetry(
+          this.fetcher,
           'https://generativelanguage.googleapis.com/v1beta/models/' +
             encodeURIComponent(model) +
             ':generateContent',
@@ -325,9 +336,11 @@ export class GeminiInvoiceReader {
               },
             }),
           },
+          deadlineAt,
+          this.retryBaseMs(),
         );
         active();
-        if (!response.ok) throw await googleFailure(response);
+        if (!response.ok) throw await googleFailure(response, attempts);
         const reader = response.body?.getReader();
         if (!reader)
           throw failure('GEMINI_INVALID_RESPONSE', 'Gemini devolvió una respuesta vacía.');
@@ -394,7 +407,7 @@ export class GeminiInvoiceReader {
           rawText: parsed.data.text,
           confidence: null,
           imageHash,
-          attempts: 1,
+          attempts,
           engine: 'gemini:' + model,
         };
       } catch (error) {

@@ -47,6 +47,8 @@ configurado mediante `POST /api/goods/invoice-images/check` (solo administrador)
 El servidor hace un GET al endpoint oficial de Google, sin enviar la fotografía ni generar
 contenido. El plazo del servidor es de 15 segundos y el del navegador, 20. Cerrar la ventana
 cancela la comprobación. No modifica facturas, inventario, claves, modelos ni facturación.
+La comprobación puede reintentar hasta dos veces si Google responde 500, 502, 503 o 504;
+las esperas cuentan dentro de sus 15 segundos. No genera contenido en ningún intento.
 Una respuesta correcta confirma el acceso a los metadatos del modelo y que anuncia
 `generateContent`; no garantiza cuota disponible ni aceptación de la imagen o del esquema
 estructurado en la siguiente lectura.
@@ -66,6 +68,7 @@ metadatos de proyectos ni texto de la factura. Una clave rechazada puede llegar 
 | `GEMINI_REGION_UNAVAILABLE` | Regiones admitidas por Google y ubicación del servidor. |
 | `GEMINI_FREE_TIER_UNAVAILABLE` / `GEMINI_PROJECT_UNAVAILABLE` | Disponibilidad de cupo gratuito y estado del proyecto; la aplicación no activa facturación. |
 | `GEMINI_MODEL_UNAVAILABLE` | Modelo con imágenes y salida estructurada disponible para el proyecto. |
+| `GEMINI_SERVICE_BUSY` | Google sigue temporalmente indisponible; esperar unos minutos y volver a intentar. |
 | `GEMINI_QUOTA` | Cuotas o límites del proyecto en AI Studio; no hay reintento automático. |
 | `GEMINI_REQUEST_FORMAT` | Integración y parámetros enviados: requiere revisión de código, no otra fotografía. |
 | `GEMINI_BAD_REQUEST` | Google rechazó la petición sin un motivo reconocido; compartir solo la referencia y el HTTP. |
@@ -84,6 +87,20 @@ se valida con un esquema estricto; las instrucciones dentro de la imagen se trat
 La API descarta respuestas truncadas, vacías o inválidas y limita su tamaño a 1 MiB.
 Los errores del proveedor se comunican mediante códigos y mensajes estáticos, sin imprimir
 claves, fotografías, respuestas completas ni texto de documentos en los registros.
+
+Ante respuestas HTTP 500, 502, 503 o 504, la lectura reintenta **hasta dos veces**
+(máximo tres envíos al mismo modelo). La fotografía se prepara una sola vez. Se espera
+aproximadamente 1 y 2 segundos con una pequeña variación, o el plazo indicado por
+`Retry-After`. Si esa espera no cabe en el tiempo restante, no se inicia otro intento.
+No se reinicia el plazo global ni se cambia de modelo, proveedor o plan. Cada envío puede
+computar contra los límites del proveedor. Los errores de clave, restricciones, cuota 429,
+JSON incompleto y fallos de conexión de resultado incierto no se reintentan automáticamente.
+
+La cancelación también interrumpe la espera entre intentos. Un envío HTTP repetido del mismo
+intento comparte la secuencia de reintentos y el resultado. Si Google continúa indisponible,
+se muestra `GEMINI_SERVICE_BUSY` para HTTP 502/503/504; un nuevo despliegue no puede resolver
+una caída del proveedor. El estado HTTP y la cantidad de intentos se conservan como datos
+seguros de diagnóstico, sin exponer la respuesta original.
 
 Cada instancia admite dos solicitudes de Gemini simultáneas, con un plazo completo de
 90 segundos incluyendo preparación y recepción. Este límite por instancia no sustituye
@@ -233,3 +250,7 @@ flujo de navegador hasta el borrador y sus márgenes. Una prueba HTTP multipart 
 comprueba envíos repetidos simultáneos, recuperación de resultados y conflicto de opciones. Estas pruebas no envían fotografías a
 Google. Para comprobar la precisión sobre las fotografías originales se necesita configurar
 una clave válida y ejecutar una lectura real en el servicio desplegado.
+
+Las pruebas de reintento simulan recuperación después de dos 503, indisponibilidad persistente,
+Retry-After, cancelación durante la espera, un único conjunto de intentos compartido por reenvíos
+y los plazos originales de lectura y comprobación. No verifican disponibilidad real de Google.

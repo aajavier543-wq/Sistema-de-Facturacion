@@ -62,7 +62,7 @@ test('respuestas inválidas o sobredimensionadas no filtran datos ni rompen el d
     [404, 'GEMINI_MODEL_UNAVAILABLE'],
     [413, 'GEMINI_IMAGE_TOO_LARGE'],
     [500, 'GEMINI_UNAVAILABLE'],
-    [503, 'GEMINI_UNAVAILABLE'],
+    [503, 'GEMINI_SERVICE_BUSY'],
   ] as const) {
     const error = await googleFailure(new Response(secret, { status }));
     assert.equal((error.getResponse() as any).code, code);

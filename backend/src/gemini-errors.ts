@@ -27,7 +27,7 @@ export async function boundedGoogleJson(
     reader.releaseLock();
   }
 }
-export async function googleFailure(response: Response): Promise<HttpException> {
+export async function googleFailure(response: Response, attempts = 1): Promise<HttpException> {
   const body = (await boundedGoogleJson(response)) as any;
   const error = body?.error;
   const message = typeof error?.message === 'string' ? error.message.slice(0, 16000) : '';
@@ -48,6 +48,7 @@ export async function googleFailure(response: Response): Promise<HttpException> 
         code,
         message: `${text} (Google HTTP ${response.status}; ${code}).`,
         providerStatus: response.status,
+        attempts,
       },
       status,
     );
@@ -132,6 +133,13 @@ export async function googleFailure(response: Response): Promise<HttpException> 
       'GEMINI_IMAGE_TOO_LARGE',
       'Google rechazó el tamaño de la imagen. Recorta el documento o carga una fotografía más pequeña',
       422,
+    );
+  if ([502, 503, 504].includes(response.status))
+    return fail(
+      'GEMINI_SERVICE_BUSY',
+      attempts > 1
+        ? 'Google sigue temporalmente ocupado o no disponible después de los reintentos. Vuelve a intentarlo en unos minutos'
+        : 'Google está temporalmente ocupado o no disponible. Vuelve a intentarlo en unos minutos',
     );
   return fail(
     'GEMINI_UNAVAILABLE',

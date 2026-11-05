@@ -150,7 +150,6 @@ test('cuota, clave y modelo se reportan sin reintento automático ni filtración
     [429, 'GEMINI_QUOTA'],
     [403, 'GEMINI_AUTH'],
     [404, 'GEMINI_MODEL_UNAVAILABLE'],
-    [500, 'GEMINI_UNAVAILABLE'],
   ] as const) {
     let calls = 0;
     const reader = new GeminiInvoiceReader((async () => {
@@ -424,4 +423,87 @@ test('leer una factura conserva el motivo API_KEY_INVALID aunque Google responda
       { status: 400 },
     )) as typeof fetch);
   await assert.rejects(reader.recognize(file(), options), code('GEMINI_INVALID_KEY'));
+});
+
+class FastRetry extends GeminiInvoiceReader {
+  protected override retryBaseMs() {
+    return 1;
+  }
+}
+test('la lectura compartida se recupera de un 503 sin duplicar la secuencia de reintentos', async () => {
+  let calls = 0;
+  const reader = new FastRetry((async () => {
+    calls++;
+    return calls < 3 ? new Response('busy', { status: 503 }) : response();
+  }) as typeof fetch);
+  const context = {
+    principal: { tenantId: randomUUID(), userId: randomUUID(), role: 'admin' as const },
+    requestId: randomUUID(),
+  };
+  try {
+    const results = await Promise.all([
+      reader.recognize(file(), options, context),
+      reader.recognize(file(), options, context),
+    ]);
+    assert.equal(results[0]!.attempts, 3);
+    assert.equal(results[0]!.reading.lines.length, 6);
+    assert.deepEqual(results[0], results[1]);
+    assert.equal(calls, 3);
+  } finally {
+    await reader.shutdown();
+  }
+});
+test('comprobar conexión recupera 503 transitorio y una indisponibilidad persistente conserva el motivo y libera el lector', async () => {
+  let checks = 0;
+  const check = new FastRetry((async () =>
+    ++checks === 1
+      ? new Response('busy', { status: 503 })
+      : Response.json({ supportedGenerationMethods: ['generateContent'] })) as typeof fetch);
+  const result = await check.checkConnection();
+  assert.equal(result.attempts, 2);
+  assert.equal(result.available, true);
+  let calls = 0;
+  const reader = new FastRetry((async () => {
+    calls++;
+    return calls <= 3 ? new Response('busy', { status: 503 }) : response();
+  }) as typeof fetch);
+  try {
+    await assert.rejects(reader.recognize(file(), options), (error: unknown) => {
+      assert.ok(error instanceof HttpException);
+      const body = error.getResponse() as any;
+      assert.equal(body.code, 'GEMINI_SERVICE_BUSY');
+      assert.equal(body.providerStatus, 503);
+      assert.equal(body.attempts, 3);
+      return true;
+    });
+    assert.equal(calls, 3);
+    assert.equal((await reader.recognize(file(), options)).reading.lines.length, 6);
+    assert.equal(calls, 4);
+  } finally {
+    await reader.shutdown();
+  }
+});
+test('el plazo original de lectura y comprobación también incluye la espera de reintentos', async () => {
+  class DeadlineRetry extends GeminiInvoiceReader {
+    protected override timeoutMs() {
+      return 50;
+    }
+    protected override checkTimeoutMs() {
+      return 50;
+    }
+    protected override retryBaseMs() {
+      return 1;
+    }
+  }
+  let calls = 0;
+  const reader = new DeadlineRetry((async () => {
+    calls++;
+    return calls % 2 === 1
+      ? new Response('busy', { status: 503 })
+      : new Promise<Response>(() => {});
+  }) as typeof fetch);
+  await assert.rejects(reader.recognize(file(), options), code('GEMINI_TIMEOUT'));
+  assert.equal(calls, 2);
+  await assert.rejects(reader.checkConnection(), code('GEMINI_CHECK_TIMEOUT'));
+  assert.equal(calls, 4);
 });

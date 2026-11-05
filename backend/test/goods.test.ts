@@ -1904,7 +1904,7 @@ if (process.env.RUN_BROWSER === '1')
       await page.route('**/api/goods/invoice-images/check', (route) => {
         checks++;
         return route.fulfill({
-          status: checks === 1 ? 503 : 200,
+          status: checks < 3 ? 503 : 200,
           contentType: 'application/json',
           body: JSON.stringify(
             checks === 1
@@ -1912,18 +1912,27 @@ if (process.env.RUN_BROWSER === '1')
                   code: 'GEMINI_INVALID_KEY',
                   message: 'Google rechazó la clave de API (Google HTTP 400; GEMINI_INVALID_KEY).',
                 }
-              : {
-                  available: true,
-                  message: 'Google aceptó la clave y confirmó el acceso al modelo.',
-                },
+              : checks === 2
+                ? {
+                    code: 'GEMINI_SERVICE_BUSY',
+                    message:
+                      'Google sigue temporalmente ocupado o no disponible después de los reintentos (Google HTTP 503; GEMINI_SERVICE_BUSY).',
+                    attempts: 3,
+                  }
+                : {
+                    available: true,
+                    message: 'Google aceptó la clave y confirmó el acceso al modelo.',
+                  },
           ),
         });
       });
       await dialog.getByRole('button', { name: 'Comprobar conexión', exact: true }).click();
       await dialog.getByRole('alert').filter({ hasText: 'GEMINI_INVALID_KEY' }).waitFor();
       await dialog.getByRole('button', { name: 'Comprobar conexión', exact: true }).click();
+      await dialog.getByRole('alert').filter({ hasText: 'GEMINI_SERVICE_BUSY' }).waitFor();
+      await dialog.getByRole('button', { name: 'Comprobar conexión', exact: true }).click();
       await dialog.getByRole('status').filter({ hasText: 'Google aceptó la clave' }).waitFor();
-      assert.equal(checks, 2);
+      assert.equal(checks, 3);
       assert.equal(await dialog.getByLabel('Lectura detallada para fotos difíciles').count(), 0);
       await dialog.getByLabel('Imagen de factura').setInputFiles({
         name: 'gemini-nota.png',

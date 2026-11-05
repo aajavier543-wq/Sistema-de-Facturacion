@@ -83,6 +83,10 @@ Si Google rechaza la clave con HTTP 400, la aplicación muestra `GEMINI_INVALID_
 si reporta exposición, `GEMINI_KEY_EXPOSED`. También distingue restricciones, API deshabilitada,
 modelo, región y formato. Comparte solo el código y HTTP; nunca la clave o respuestas crudas.
 Una comprobación correcta no garantiza la cuota o la aceptación de la próxima lectura.
+`Google HTTP 503` indica indisponibilidad temporal: no prueba una clave inválida. La aplicación
+reintenta hasta dos veces frente a HTTP 500/502/503/504 dentro del plazo original. Si persiste
+`GEMINI_SERVICE_BUSY`, esperar y volver a intentar; guardar la misma clave o desplegar de nuevo
+no corrige una indisponibilidad de Google. No se reintenta automáticamente la cuota 429.
 Consulta [facturas desde imágenes](invoice-images.md) para límites y revisión.
 
 ### Diagnóstico de arranque
